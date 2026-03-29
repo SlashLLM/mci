@@ -1,0 +1,6 @@
+# Full stack from repo root (Postgres + Redis + API + PWA):
+#   docker compose up --build
+#
+# Same as: docker compose -f infra/docker-compose.yml up --build
+include:
+  - path: infra/docker-compose.yml

@@ -1,0 +1,61 @@
+from typing import Optional
+
+from pydantic import BaseModel, Field, field_validator
+
+from app.constants.job_types import ALLOWED_JOB_TYPES
+
+
+class WorkerProfileIn(BaseModel):
+    full_name: str = ""
+    nric: Optional[str] = None
+    bank_account: Optional[str] = None
+    bank_name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    languages: list[str] = []
+    job_type_preferences: list[str] = []
+    skills: list[str] = []
+    certifications: list[str] = []
+    availability: dict = {}
+    location_lat: Optional[float] = None
+    location_lng: Optional[float] = None
+    work_pass_not_applicable: Optional[bool] = None
+
+    @field_validator("job_type_preferences")
+    @classmethod
+    def job_prefs_must_be_catalogue(cls, v: list[str]) -> list[str]:
+        for item in v:
+            if item not in ALLOWED_JOB_TYPES:
+                raise ValueError(f"Invalid job type preference: {item!r}")
+        return v
+
+
+class WorkerProfileOut(BaseModel):
+    id: int
+    full_name: str
+    nric_masked: Optional[str]
+    phone: str = ""
+    email: Optional[str] = None
+    languages: list
+    job_type_preferences: list
+    skills: list
+    certifications: list
+    availability: dict
+    location_lat: Optional[float]
+    location_lng: Optional[float]
+    bank_name: Optional[str] = None
+    work_pass_not_applicable: bool = False
+    rating_avg: float
+    tier: str
+    status: str
+    profile_completeness_pct: int
+    pdpa_consent: bool
+    terms_accepted: bool = False
+    onboarding_completed: bool = False
+
+    class Config:
+        from_attributes = True
+
+
+class OnboardingCompleteIn(BaseModel):
+    terms_accepted: bool = Field(..., description="Must be true to complete onboarding")

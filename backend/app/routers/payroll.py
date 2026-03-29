@@ -1,0 +1,111 @@
+import csv
+import io
+import os
+import uuid
+from datetime import datetime, timezone
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth.deps import require_roles
+from app.config import get_settings
+from app.db.session import get_db
+from app.models import PaymentRecord, PaymentStatus, TimesheetEntry, TimesheetStatus, User, UserRole, WorkerProfile
+from app.services.audit import log_audit
+from app.services.crypto_pii import decrypt_value
+from app.services.notifications import notify_user
+
+router = APIRouter(prefix="/payroll", tags=["payroll"])
+
+
+@router.post("/generate-payment-file")
+async def generate_payment_file(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.ta, UserRole.admin))],
+):
+    r = await db.execute(
+        select(TimesheetEntry).where(TimesheetEntry.status == TimesheetStatus.ta_verified)
+    )
+    entries = r.scalars().all()
+    if not entries:
+        raise HTTPException(400, detail="No verified timesheets")
+
+    by_worker: dict[int, list[TimesheetEntry]] = {}
+    for e in entries:
+        by_worker.setdefault(e.worker_id, []).append(e)
+
+    settings = get_settings()
+    os.makedirs(settings.upload_dir, exist_ok=True)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["worker_name", "bank_account", "amount_sgd", "timesheet_ids"])
+    file_rows = []
+    for wid, ents in by_worker.items():
+        wp = await db.get(WorkerProfile, wid)
+        if not wp:
+            continue
+        total = sum(e.gross_pay for e in ents)
+        bank = decrypt_value(wp.bank_encrypted) if wp.bank_encrypted else ""
+        ids = ",".join(str(e.id) for e in ents)
+        w.writerow([wp.full_name, bank, f"{total:.2f}", ids])
+        file_rows.append((wid, [e.id for e in ents], total))
+        for e in ents:
+            e.status = TimesheetStatus.payment_released
+
+    name = f"pay_{uuid.uuid4().hex}.csv"
+    path = os.path.join(settings.upload_dir, name)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        f.write(buf.getvalue())
+    rel = f"uploads/{name}"
+
+    for wid, eids, total in file_rows:
+        pr = PaymentRecord(
+            worker_id=wid,
+            timesheet_entry_ids=eids,
+            total_amount=total,
+            payment_status=PaymentStatus.processing,
+            payment_instructions_file_url=rel,
+        )
+        db.add(pr)
+        wp = await db.get(WorkerProfile, wid)
+        if not wp:
+            continue
+        usr = await db.get(User, wp.user_id)
+        if usr:
+            await notify_user(
+                db,
+                usr.id,
+                title="Payment processing",
+                body=f"Your payment of {total:.2f} SGD is being processed.",
+            )
+
+    await log_audit(
+        db,
+        actor_user_id=user.id,
+        action="payment_file_generated",
+        entity_type="PaymentBatch",
+        entity_id=name,
+    )
+    return {"ok": True, "file": rel, "workers": len(by_worker)}
+
+
+@router.post("/mark-paid/{payment_id}")
+async def mark_paid(
+    payment_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.ta, UserRole.admin))],
+):
+    pr = await db.get(PaymentRecord, payment_id)
+    if not pr:
+        raise HTTPException(404)
+    pr.payment_status = PaymentStatus.paid
+    pr.paid_at = datetime.now(timezone.utc)
+    wp = await db.get(WorkerProfile, pr.worker_id)
+    if wp:
+        usr = await db.get(User, wp.user_id)
+        if usr:
+            await notify_user(db, usr.id, title="Paid", body=f"Payment of {pr.total_amount:.2f} marked paid.")
+    await log_audit(db, actor_user_id=user.id, action="payment_mark_paid", entity_type="PaymentRecord", entity_id=str(payment_id))
+    return {"ok": True}

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.venv/
+__pycache__/
+*.pyc
+.env
+uploads/
+# Optional local copy of Vite dist when testing FastAPI static serving
+backend/static/
+*.sqlite3
+.DS_Store

@@ -1,0 +1,55 @@
+# Full stack: Postgres + Redis + FastAPI (API + React static UI on one port)
+# From repo root:
+#   docker compose -f infra/docker-compose.yml up --build
+#
+# URLs:
+#   App + API:  http://localhost:8000
+#   Swagger:    http://localhost:8000/docs
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mci
+      POSTGRES_PASSWORD: mci
+      POSTGRES_DB: mci_workforce
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mci -d mci_workforce"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://mci:mci@postgres:5432/mci_workforce
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-change-me-use-openssl-rand-hex-32}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-15728640}
+      CORS_ORIGINS: http://localhost:8000,http://127.0.0.1:8000,http://localhost:5173,http://127.0.0.1:5173
+      OTP_DEV_MODE: "true"
+      OTP_DEV_CODE: "123456"
+      RUN_SEED: ${RUN_SEED:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 180s
+    ports:
+      - "8000:8000"
+
+volumes:
+  pgdata:

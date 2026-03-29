@@ -1,0 +1,570 @@
+from datetime import datetime, timezone
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.auth.deps import require_roles
+from app.db.session import get_db
+from app.models import (
+    AssignmentStatus,
+    AttendanceRecord,
+    JobOrder,
+    JobOrderStatus,
+    MarketplaceShiftDismissal,
+    Shift,
+    ShiftAssignment,
+    ShiftOffer,
+    ShiftOfferStatus,
+    User,
+    UserRole,
+    WorkerProfile,
+)
+from app.services.attendance_rules import (
+    clock_in_earliest_utc,
+    is_clock_in_too_early,
+    is_late_window_without_clock_in,
+    is_past_shift_end,
+)
+from app.services.dispatch import application_next_rank, confirmed_count, waitlist_next_rank
+from app.services.job_status import refresh_job_order_fill_status
+from app.services.notifications import notify_user
+from app.services.recommendations import job_order_ids_rejected_for_worker, recommended_shifts_for_worker
+
+router = APIRouter(prefix="/worker", tags=["worker-app"])
+
+
+async def _decline_pending_offers_for_shift_worker(
+    db: AsyncSession, shift_id: int, worker_profile_id: int
+) -> None:
+    r = await db.execute(
+        select(ShiftOffer).where(
+            ShiftOffer.shift_id == shift_id,
+            ShiftOffer.worker_id == worker_profile_id,
+            ShiftOffer.status == ShiftOfferStatus.pending,
+        )
+    )
+    for o in r.scalars().all():
+        o.status = ShiftOfferStatus.declined
+
+
+_HISTORY_STATUSES_ALL: tuple[AssignmentStatus, ...] = (
+    AssignmentStatus.confirmed,
+    AssignmentStatus.completed,
+    AssignmentStatus.invited,
+    AssignmentStatus.waitlisted,
+    AssignmentStatus.applied,
+    AssignmentStatus.rejected,
+)
+
+
+def _history_statuses_for_query(bucket: str) -> tuple[AssignmentStatus, ...]:
+    b = (bucket or "all").strip().lower()
+    if b == "all":
+        return _HISTORY_STATUSES_ALL
+    if b == "accepted":
+        return (AssignmentStatus.confirmed, AssignmentStatus.completed, AssignmentStatus.invited)
+    if b == "waitlisted":
+        return (AssignmentStatus.waitlisted,)
+    if b == "pending":
+        return (AssignmentStatus.applied,)
+    if b == "rejected":
+        return (AssignmentStatus.rejected,)
+    raise HTTPException(400, detail="status must be all, accepted, waitlisted, pending, or rejected")
+
+
+def _history_bucket_for_status(st: AssignmentStatus) -> str:
+    if st in (AssignmentStatus.confirmed, AssignmentStatus.completed, AssignmentStatus.invited):
+        return "accepted"
+    if st == AssignmentStatus.waitlisted:
+        return "waitlisted"
+    if st == AssignmentStatus.applied:
+        return "pending"
+    if st == AssignmentStatus.rejected:
+        return "rejected"
+    return st.value
+
+
+@router.get("/offers")
+async def my_offers(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.worker))],
+):
+    r = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
+    wp = r.scalar_one_or_none()
+    if not wp:
+        return []
+    rejected_jobs = await job_order_ids_rejected_for_worker(db, wp.id)
+    r2 = await db.execute(
+        select(ShiftOffer)
+        .options(selectinload(ShiftOffer.shift).selectinload(Shift.job_order))
+        .where(ShiftOffer.worker_id == wp.id, ShiftOffer.status == ShiftOfferStatus.pending)
+    )
+    offers = r2.scalars().all()
+    return [
+        {
+            "id": o.id,
+            "match_score": o.match_score,
+            "expires_at": o.expires_at.isoformat() if o.expires_at else None,
+            "shift": {
+                "id": o.shift.id,
+                "starts_at": o.shift.starts_at.isoformat(),
+                "ends_at": o.shift.ends_at.isoformat(),
+                "job_title": o.shift.job_order.title,
+                "job_id": o.shift.job_order_id,
+            },
+        }
+        for o in offers
+        if o.shift.job_order_id not in rejected_jobs
+    ]
+
+
+@router.post("/offers/{offer_id}/accept")
+async def accept_offer(
+    offer_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.worker))],
+):
+    r = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
+    wp = r.scalar_one_or_none()
+    if not wp:
+        raise HTTPException(404)
+    offer = await db.get(ShiftOffer, offer_id)
+    if not offer or offer.worker_id != wp.id or offer.status != ShiftOfferStatus.pending:
+        raise HTTPException(400, detail="Invalid offer")
+    if offer.expires_at and offer.expires_at < datetime.now(timezone.utc):
+        offer.status = ShiftOfferStatus.expired
+        raise HTTPException(400, detail="Offer expired")
+
+    shift = await db.get(Shift, offer.shift_id)
+    job = await db.get(JobOrder, shift.job_order_id)
+    prev_sa = await db.execute(
+        select(ShiftAssignment).where(
+            ShiftAssignment.shift_id == shift.id,
+            ShiftAssignment.worker_id == wp.id,
+        )
+    )
+    prev_row = prev_sa.scalar_one_or_none()
+    if prev_row:
+        if prev_row.status == AssignmentStatus.confirmed:
+            raise HTTPException(400, detail="Already confirmed for this shift")
+        if prev_row.status == AssignmentStatus.waitlisted:
+            raise HTTPException(400, detail="Already on roster for this shift")
+        if prev_row.status == AssignmentStatus.applied:
+            await db.delete(prev_row)
+            await db.flush()
+        else:
+            raise HTTPException(400, detail="Cannot accept offer while this assignment exists")
+
+    cc = await confirmed_count(db, shift.id)
+    offer.status = ShiftOfferStatus.accepted
+
+    if cc < shift.workers_required:
+        sa = ShiftAssignment(
+            shift_id=shift.id,
+            worker_id=wp.id,
+            status=AssignmentStatus.confirmed,
+            match_score=offer.match_score,
+            confirmed_at=datetime.now(timezone.utc),
+        )
+        db.add(sa)
+    else:
+        rank = await waitlist_next_rank(db, shift.id)
+        sa = ShiftAssignment(
+            shift_id=shift.id,
+            worker_id=wp.id,
+            status=AssignmentStatus.waitlisted,
+            waitlist_rank=rank,
+            match_score=offer.match_score,
+        )
+        db.add(sa)
+    await db.flush()
+    await refresh_job_order_fill_status(db, job)
+    await notify_user(db, user.id, title="Shift update", body=f"Status: {sa.status.value} for shift {shift.id}")
+    return {"assignment_status": sa.status.value}
+
+
+@router.post("/offers/{offer_id}/decline")
+async def decline_offer(
+    offer_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.worker))],
+):
+    r = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
+    wp = r.scalar_one_or_none()
+    if not wp:
+        raise HTTPException(404)
+    offer = await db.get(ShiftOffer, offer_id)
+    if not offer or offer.worker_id != wp.id:
+        raise HTTPException(400)
+    offer.status = ShiftOfferStatus.declined
+    return {"ok": True}
+
+
+@router.get("/marketplace/shifts")
+async def marketplace_shifts(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.worker))],
+    max_km: float | None = Query(None, ge=0, description="Optional max distance from worker home (km)"),
+):
+    r = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
+    wp = r.scalar_one_or_none()
+    if not wp:
+        return []
+    ranked = await recommended_shifts_for_worker(db, wp, limit=50, max_km=max_km)
+    shift_ids = [s.id for s, _ in ranked]
+    pending_by_shift: dict[int, int] = {}
+    applied_shift_ids: set[int] = set()
+    if shift_ids:
+        off_r = await db.execute(
+            select(ShiftOffer).where(
+                ShiftOffer.worker_id == wp.id,
+                ShiftOffer.shift_id.in_(shift_ids),
+                ShiftOffer.status == ShiftOfferStatus.pending,
+            )
+        )
+        for o in off_r.scalars().all():
+            pending_by_shift.setdefault(o.shift_id, o.id)
+        app_r = await db.execute(
+            select(ShiftAssignment.shift_id).where(
+                ShiftAssignment.worker_id == wp.id,
+                ShiftAssignment.shift_id.in_(shift_ids),
+                ShiftAssignment.status == AssignmentStatus.applied,
+            )
+        )
+        applied_shift_ids = {row[0] for row in app_r.all()}
+
+    out = []
+    for s, distance_m in ranked:
+        job = await db.get(JobOrder, s.job_order_id)
+        if not job:
+            continue
+        out.append(
+            {
+                "shift_id": s.id,
+                "job_id": job.id,
+                "title": job.title,
+                "job_type": job.job_type,
+                "starts_at": s.starts_at.isoformat(),
+                "ends_at": s.ends_at.isoformat(),
+                "location_address": job.location_address,
+                "location_lat": job.location_lat,
+                "location_lng": job.location_lng,
+                "hourly_rate": job.hourly_rate,
+                "per_shift_rate": job.per_shift_rate,
+                "distance_m": distance_m,
+                "pending_offer_id": pending_by_shift.get(s.id),
+                "my_application_status": "applied" if s.id in applied_shift_ids else None,
+            }
+        )
+    return out
+
+
+@router.post("/marketplace/shifts/{shift_id}/dismiss")
+async def dismiss_marketplace_shift(
+    shift_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.worker))],
+):
+    r = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
+    wp = r.scalar_one_or_none()
+    if not wp:
+        raise HTTPException(404)
+    shift = await db.get(Shift, shift_id)
+    if not shift:
+        raise HTTPException(404)
+    job = await db.get(JobOrder, shift.job_order_id)
+    if not job or job.status not in (JobOrderStatus.open, JobOrderStatus.partially_filled):
+        raise HTTPException(400, detail="Shift not available in marketplace")
+    now = datetime.now(timezone.utc)
+    if shift.starts_at <= now:
+        raise HTTPException(400, detail="Shift has already started")
+    ex = await db.execute(
+        select(MarketplaceShiftDismissal).where(
+            MarketplaceShiftDismissal.worker_profile_id == wp.id,
+            MarketplaceShiftDismissal.shift_id == shift_id,
+        )
+    )
+    if ex.scalar_one_or_none():
+        return {"ok": True}
+    db.add(MarketplaceShiftDismissal(worker_profile_id=wp.id, shift_id=shift_id))
+    await db.flush()
+    return {"ok": True}
+
+
+@router.post("/marketplace/shifts/{shift_id}/apply")
+async def apply_marketplace_shift(
+    shift_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.worker))],
+):
+    r = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
+    wp = r.scalar_one_or_none()
+    if not wp:
+        raise HTTPException(404)
+    shift = await db.get(Shift, shift_id)
+    if not shift:
+        raise HTTPException(404)
+    job = await db.get(JobOrder, shift.job_order_id)
+    if not job or job.status not in (JobOrderStatus.open, JobOrderStatus.partially_filled):
+        raise HTTPException(400, detail="Shift not available in marketplace")
+    now = datetime.now(timezone.utc)
+    if shift.starts_at <= now:
+        raise HTTPException(400, detail="Shift has already started")
+
+    ex_a = await db.execute(
+        select(ShiftAssignment).where(
+            ShiftAssignment.shift_id == shift_id,
+            ShiftAssignment.worker_id == wp.id,
+        )
+    )
+    existing = ex_a.scalar_one_or_none()
+    if existing:
+        if existing.status == AssignmentStatus.applied:
+            return {"ok": True, "assignment_status": existing.status.value, "assignment_id": existing.id}
+        if existing.status == AssignmentStatus.confirmed:
+            raise HTTPException(400, detail="You are already confirmed for this shift")
+        if existing.status == AssignmentStatus.waitlisted:
+            raise HTTPException(400, detail="You are already on the roster for this shift")
+        if existing.status == AssignmentStatus.rejected:
+            existing.status = AssignmentStatus.applied
+            existing.waitlist_rank = await application_next_rank(db, shift_id)
+            existing.match_score = 0.0
+            existing.confirmed_at = None
+            await _decline_pending_offers_for_shift_worker(db, shift_id, wp.id)
+            await db.flush()
+            await refresh_job_order_fill_status(db, job)
+            return {"ok": True, "assignment_status": existing.status.value, "assignment_id": existing.id}
+        raise HTTPException(400, detail="Cannot apply for this shift")
+
+    rank = await application_next_rank(db, shift_id)
+    sa = ShiftAssignment(
+        shift_id=shift_id,
+        worker_id=wp.id,
+        status=AssignmentStatus.applied,
+        waitlist_rank=rank,
+        match_score=0.0,
+    )
+    db.add(sa)
+    await _decline_pending_offers_for_shift_worker(db, shift_id, wp.id)
+    await db.flush()
+    await refresh_job_order_fill_status(db, job)
+    await notify_user(
+        db,
+        user.id,
+        title="Application sent",
+        body=f"Your application for “{job.title}” is pending employer approval.",
+    )
+    return {"ok": True, "assignment_status": sa.status.value, "assignment_id": sa.id}
+
+
+@router.post("/marketplace/shifts/{shift_id}/withdraw-application")
+async def withdraw_marketplace_application(
+    shift_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.worker))],
+):
+    r = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
+    wp = r.scalar_one_or_none()
+    if not wp:
+        raise HTTPException(404)
+    ex = await db.execute(
+        select(ShiftAssignment).where(
+            ShiftAssignment.shift_id == shift_id,
+            ShiftAssignment.worker_id == wp.id,
+            ShiftAssignment.status == AssignmentStatus.applied,
+        )
+    )
+    a = ex.scalar_one_or_none()
+    if not a:
+        raise HTTPException(404, detail="No pending application for this shift")
+    shift = await db.get(Shift, shift_id)
+    job = await db.get(JobOrder, shift.job_order_id) if shift else None
+    await db.delete(a)
+    await db.flush()
+    if job:
+        await refresh_job_order_fill_status(db, job)
+    return {"ok": True}
+
+
+@router.get("/clock/context")
+async def worker_clock_context(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.worker))],
+    assignment_id: int | None = Query(None, description="Optional confirmed assignment to target"),
+):
+    r = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
+    wp = r.scalar_one_or_none()
+    if not wp:
+        return {"assignment": None}
+
+    now = datetime.now(timezone.utc)
+
+    if assignment_id is not None:
+        r_sel = await db.execute(
+            select(ShiftAssignment)
+            .options(selectinload(ShiftAssignment.shift).selectinload(Shift.job_order))
+            .where(
+                ShiftAssignment.id == assignment_id,
+                ShiftAssignment.worker_id == wp.id,
+                ShiftAssignment.status == AssignmentStatus.confirmed,
+            )
+        )
+        a = r_sel.scalar_one_or_none()
+        if not a:
+            raise HTTPException(404, detail="Assignment not found")
+    else:
+        r2 = await db.execute(
+            select(ShiftAssignment)
+            .options(selectinload(ShiftAssignment.shift).selectinload(Shift.job_order))
+            .join(Shift, ShiftAssignment.shift_id == Shift.id)
+            .where(
+                ShiftAssignment.worker_id == wp.id,
+                ShiftAssignment.status == AssignmentStatus.confirmed,
+                Shift.ends_at > now,
+            )
+            .order_by(Shift.starts_at.asc())
+        )
+        a = r2.scalars().first()
+        if not a:
+            return {"assignment": None}
+
+    shift = a.shift
+    job = shift.job_order
+    ar = await db.execute(select(AttendanceRecord).where(AttendanceRecord.shift_assignment_id == a.id))
+    rec = ar.scalar_one_or_none()
+    has_in = bool(rec and rec.clock_in_time)
+    has_out = bool(rec and rec.clock_out_time)
+
+    can_clock_in_now = (
+        not has_in
+        and not has_out
+        and not is_past_shift_end(now, shift.ends_at)
+        and not is_clock_in_too_early(now, shift.starts_at)
+    )
+
+    return {
+        "assignment": {
+            "assignment_id": a.id,
+            "shift_id": shift.id,
+            "job_title": job.title,
+            "starts_at": shift.starts_at.isoformat(),
+            "ends_at": shift.ends_at.isoformat(),
+            "clock_in_allowed_not_before": clock_in_earliest_utc(shift.starts_at).isoformat(),
+            "already_clocked_in": has_in,
+            "already_clocked_out": has_out,
+            "is_late_window": is_late_window_without_clock_in(now, shift.starts_at, has_in),
+            "can_clock_in_now": can_clock_in_now,
+        }
+    }
+
+
+@router.get("/my-shifts")
+async def my_shifts(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.worker))],
+):
+    r = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
+    wp = r.scalar_one_or_none()
+    if not wp:
+        return []
+    now = datetime.now(timezone.utc)
+    r2 = await db.execute(
+        select(ShiftAssignment)
+        .options(selectinload(ShiftAssignment.shift).selectinload(Shift.job_order))
+        .join(Shift, ShiftAssignment.shift_id == Shift.id)
+        .where(
+            ShiftAssignment.worker_id == wp.id,
+            ShiftAssignment.status.in_(
+                (AssignmentStatus.confirmed, AssignmentStatus.waitlisted, AssignmentStatus.applied),
+            ),
+            Shift.ends_at > now,
+        )
+        .order_by(Shift.starts_at.asc())
+    )
+    rows = r2.scalars().all()
+    return [
+        {
+            "assignment_id": a.id,
+            "status": a.status.value,
+            "shift": {
+                "id": a.shift.id,
+                "starts_at": a.shift.starts_at.isoformat(),
+                "ends_at": a.shift.ends_at.isoformat(),
+                "job_title": a.shift.job_order.title,
+            },
+        }
+        for a in rows
+    ]
+
+
+@router.get("/history")
+async def worker_history(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.worker))],
+    status: str = Query("all", description="all | accepted | waitlisted | pending | rejected"),
+):
+    r = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
+    wp = r.scalar_one_or_none()
+    if not wp:
+        return []
+    statuses = _history_statuses_for_query(status)
+    r2 = await db.execute(
+        select(ShiftAssignment)
+        .options(selectinload(ShiftAssignment.shift).selectinload(Shift.job_order))
+        .where(
+            ShiftAssignment.worker_id == wp.id,
+            ShiftAssignment.status.in_(statuses),
+        )
+    )
+    rows = list(r2.scalars().all())
+    rows.sort(key=lambda a: a.shift.starts_at, reverse=True)
+    out = []
+    for a in rows:
+        job = a.shift.job_order
+        out.append(
+            {
+                "assignment_id": a.id,
+                "status": a.status.value,
+                "history_bucket": _history_bucket_for_status(a.status),
+                "waitlist_rank": a.waitlist_rank,
+                "job_id": job.id,
+                "job_title": job.title,
+                "job_type": job.job_type,
+                "location_address": job.location_address,
+                "shift": {
+                    "id": a.shift.id,
+                    "starts_at": a.shift.starts_at.isoformat(),
+                    "ends_at": a.shift.ends_at.isoformat(),
+                },
+            }
+        )
+    return out
+
+
+@router.post("/assignments/{assignment_id}/cancel")
+async def cancel_assignment(
+    assignment_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.worker))],
+):
+    r = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
+    wp = r.scalar_one_or_none()
+    if not wp:
+        raise HTTPException(404)
+    a = await db.get(ShiftAssignment, assignment_id)
+    if not a or a.worker_id != wp.id:
+        raise HTTPException(404)
+    shift = await db.get(Shift, a.shift_id)
+    threshold_hours = 4
+    start = shift.starts_at
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    if (start - datetime.now(timezone.utc)).total_seconds() < threshold_hours * 3600:
+        wp.late_cancel_count = (wp.late_cancel_count or 0) + 1
+    a.status = AssignmentStatus.cancelled
+    job = await db.get(JobOrder, shift.job_order_id)
+    await refresh_job_order_fill_status(db, job)
+    return {"ok": True}
