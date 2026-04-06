@@ -25,9 +25,9 @@ from app.models import (
 )
 from app.services.attendance_geo import validate_clock_geofence
 from app.services.attendance_rules import (
-    clock_in_is_late,
-    clock_in_time_is_late,
+    is_grace_period_late_punch,
     is_clock_in_too_early,
+    is_past_clock_in_grace_deadline,
     is_past_shift_end,
 )
 from app.services.audit import log_audit
@@ -107,6 +107,14 @@ async def perform_clock_in(
             400,
             detail="Clock-in opens 10 minutes before the scheduled shift start",
         )
+    if is_past_clock_in_grace_deadline(now, shift.starts_at):
+        raise HTTPException(
+            400,
+            detail={
+                "code": "clock_in_grace_expired",
+                "message": "Clock-in is closed because you are more than 10 minutes late.",
+            },
+        )
     if is_past_shift_end(now, shift.ends_at):
         raise HTTPException(400, detail="This shift has ended; clock-in is closed")
 
@@ -145,7 +153,7 @@ async def perform_clock_in(
     rec.clock_in_lat = lat
     rec.clock_in_lng = lng
     rec.clock_in_geofence_valid = True
-    if clock_in_is_late(now, shift.starts_at):
+    if is_grace_period_late_punch(now, shift.starts_at):
         rec.status = AttendanceStatus.late
     else:
         rec.status = AttendanceStatus.unverified
@@ -195,7 +203,10 @@ async def perform_clock_out(
         rec.total_hours = (rec.clock_out_time - rec.clock_in_time).total_seconds() / 3600.0
     if not ok:
         rec.status = AttendanceStatus.flagged
-    elif clock_in_time_is_late(rec.clock_in_time, shift.starts_at):
+    elif rec.clock_in_time and (
+        is_grace_period_late_punch(rec.clock_in_time, shift.starts_at)
+        or is_past_clock_in_grace_deadline(rec.clock_in_time, shift.starts_at)
+    ):
         rec.status = AttendanceStatus.late
     else:
         rec.status = AttendanceStatus.present

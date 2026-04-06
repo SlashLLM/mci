@@ -1,14 +1,14 @@
-import type { Dispatch, SetStateAction } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
-import { api, getToken } from "../../api";
+import { api, apiUrl, getToken } from "../../api";
+import { CertificationMultiPicker } from "../../components/certifications/CertificationMultiPicker";
 import { JobTypeMultiPicker } from "../../components/jobTypes/JobTypeMultiPicker";
 import { DEFAULT_MAP_CENTER, LocationMapPicker } from "../../components/maps/LocationMapPicker";
+import { SkillMultiPicker } from "../../components/skills/SkillMultiPicker";
 import { isAllowedJobType } from "../../constants/jobTypes";
 import {
   computeOnboardingProgress,
-  progressBarClass,
   progressHint,
   type OnboardingDraft,
 } from "../../lib/onboardingProgress";
@@ -34,11 +34,51 @@ type Profile = {
 };
 
 const DOC_SLOTS = ["nric_copy", "work_pass", "certification", "training_record"] as const;
+const LANGUAGE_OPTIONS = [
+  "English",
+  "Mandarin",
+  "Chinese",
+  "Malay",
+  "Tamil",
+  "Hindi",
+  "Urdu",
+  "Bengali",
+  "Punjabi",
+  "Marathi",
+  "Telugu",
+  "Kannada",
+  "Gujarati",
+  "Thai",
+  "Vietnamese",
+  "Indonesian",
+  "Korean",
+  "Japanese",
+  "Arabic",
+  "French",
+  "Spanish",
+  "German",
+  "Italian",
+  "Portuguese",
+  "Russian",
+  "Turkish",
+  "Dutch",
+  "Greek",
+  "Swedish",
+  "Polish",
+] as const;
 
 function maskBank(s: string): string {
   const d = s.replace(/\s/g, "");
   if (d.length <= 4) return "••••";
   return "••••••" + d.slice(-4);
+}
+
+function canonicalizeLanguage(raw: string): string | null {
+  const v = raw.trim();
+  if (!v) return null;
+  const lower = v.toLowerCase();
+  const found = LANGUAGE_OPTIONS.find((l) => l.toLowerCase() === lower);
+  return found ?? null;
 }
 
 export default function WorkerOnboardingPage() {
@@ -53,9 +93,7 @@ export default function WorkerOnboardingPage() {
   const [langInput, setLangInput] = useState("");
   const [jobTypes, setJobTypes] = useState<string[]>([]);
   const [skills, setSkills] = useState<string[]>([]);
-  const [skillInput, setSkillInput] = useState("");
   const [certs, setCerts] = useState<string[]>([]);
-  const [certInput, setCertInput] = useState("");
   const [availMorning, setAvailMorning] = useState(false);
   const [availEvening, setAvailEvening] = useState(false);
   const [availWeekend, setAvailWeekend] = useState(false);
@@ -69,7 +107,9 @@ export default function WorkerOnboardingPage() {
   const [terms, setTerms] = useState(false);
   const [pdpa, setPdpa] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [mapGeoMsg, setMapGeoMsg] = useState<string | null>(null);
   const [serverPct, setServerPct] = useState<number | null>(null);
+  const [uploadedDocNames, setUploadedDocNames] = useState<Record<string, string | null>>({});
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const availability = useMemo(
@@ -120,6 +160,15 @@ export default function WorkerOnboardingPage() {
 
   const uiPct = computeOnboardingProgress(draft);
   const pct = serverPct ?? uiPct;
+
+  const languageSuggestions = useMemo(() => {
+    const q = langInput.trim().toLowerCase();
+    return LANGUAGE_OPTIONS.filter((l) => {
+      if (langs.includes(l)) return false;
+      if (!q) return true;
+      return l.toLowerCase().includes(q);
+    }).slice(0, 8);
+  }, [langInput, langs]);
 
   const persistDraftLocal = useCallback(() => {
     try {
@@ -287,15 +336,40 @@ export default function WorkerOnboardingPage() {
     })();
   }, []);
 
-  function addChip(val: string, setList: Dispatch<SetStateAction<string[]>>, setInp: (s: string) => void) {
-    const v = val.trim();
-    if (!v) return;
-    setList((prev) => (prev.includes(v) ? prev : [...prev, v]));
-    setInp("");
+  function removeLang(i: number) {
+    setLangs((prev) => prev.filter((_, idx) => idx !== i));
+  }
+
+  function addLanguage(raw: string) {
+    const canonical = canonicalizeLanguage(raw);
+    if (!canonical) return;
+    setLangs((prev) => (prev.includes(canonical) ? prev : [...prev, canonical]));
+    setLangInput("");
+  }
+
+  function useCurrentLocation() {
+    setMapGeoMsg(null);
+    if (!navigator.geolocation) {
+      setMapGeoMsg(t("map_geo_unavailable"));
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setMapGeoMsg(null);
+        setMapLat(pos.coords.latitude);
+        setMapLng(pos.coords.longitude);
+      },
+      (err) => {
+        if (err.code === err.PERMISSION_DENIED) setMapGeoMsg(t("map_geo_denied"));
+        else setMapGeoMsg(t("map_geo_error"));
+      },
+      { enableHighAccuracy: true, timeout: 12_000, maximumAge: 60_000 },
+    );
   }
 
   async function uploadFile(docType: string, file: File) {
     setMsg(null);
+    setUploadedDocNames((m) => ({ ...m, [docType]: file.name }));
     const token = getToken();
     const fd = new FormData();
     fd.append("file", file);
@@ -307,7 +381,7 @@ export default function WorkerOnboardingPage() {
       });
     }, 120);
     try {
-      const res = await fetch(`/api/workers/me/documents?doc_type=${encodeURIComponent(docType)}`, {
+      const res = await fetch(apiUrl(`/workers/me/documents?doc_type=${encodeURIComponent(docType)}`), {
         method: "POST",
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: fd,
@@ -316,12 +390,14 @@ export default function WorkerOnboardingPage() {
       if (!res.ok) throw new Error(await res.text());
       setUploadPct((m) => ({ ...m, [docType]: 100 }));
       setDocTypes((prev) => new Set([...prev, docType]));
+      setUploadedDocNames((m) => ({ ...m, [docType]: file.name }));
       const p = await api<Profile>("/workers/me/profile");
       setServerPct(p.profile_completeness_pct);
     } catch (e) {
       clearInterval(tick);
       setMsg(String(e));
       setUploadPct((m) => ({ ...m, [docType]: 0 }));
+      setUploadedDocNames((m) => ({ ...m, [docType]: null }));
     }
   }
 
@@ -345,88 +421,198 @@ export default function WorkerOnboardingPage() {
     }
   }
 
-  const barClass = progressBarClass(pct);
+  const totalSteps = 5;
+  const stepNav = [
+    { index: 1, icon: "person_outline", label: t("onb_step_basic") },
+    { index: 3, icon: "account_balance", label: t("onb_step_bank") },
+    { index: 2, icon: "settings_suggest", label: t("onb_step_prefs") },
+    { index: 4, icon: "folder", label: t("onb_step_docs") },
+    { index: 5, icon: "task_alt", label: t("onb_step_review") },
+  ];
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 -mx-1">
-      <div className="sticky top-0 z-20 bg-slate-950/95 backdrop-blur border-b border-slate-800 px-4 py-3">
-        <div className="flex justify-between items-center text-xs text-slate-400 mb-1">
-          <span>{t("onb_progress_label")}</span>
-          <span className="text-sky-300 font-mono">{pct}%</span>
+    <div className="min-h-screen bg-surface text-on-surface flex flex-col">
+      <header className="sticky top-0 z-40 h-16 border-b border-outline-variant/20 bg-slate-50">
+        <div className="mx-auto flex h-full max-w-[1440px] items-center justify-between px-4 md:px-8">
+          <span className="truncate text-xl font-bold tracking-tight text-blue-900">MCI Workforce</span>
+          <div className="hidden items-center gap-4 md:flex" />
         </div>
-        <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
-          <div
-            className={`h-full bg-gradient-to-r transition-all duration-500 ease-out ${barClass}`}
-            style={{ width: `${pct}%` }}
-          />
-        </div>
-        <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">{progressHint(pct, t)}</p>
-      </div>
+      </header>
 
-      <div className="flex-1 overflow-y-auto p-4 pb-28">
+      <div className="flex flex-1 overflow-hidden">
+        <aside className="hidden w-72 shrink-0 flex-col gap-4 bg-slate-100 px-6 py-8 md:flex">
+          <div className="mb-8">
+            <h2 className="text-2xl font-headline font-extrabold tracking-tight text-on-surface">Onboarding</h2>
+            <div className="mt-4">
+              <div className="mb-2 flex items-end justify-between">
+                <span className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">{pct}% Complete</span>
+              </div>
+              <div className="h-1 w-full overflow-hidden rounded-full bg-surface-container-highest">
+                <div className="h-full bg-primary transition-all duration-300" style={{ width: `${pct}%` }} />
+              </div>
+              <p className="mt-2 text-[11px] text-on-surface-variant">{progressHint(pct, t)}</p>
+            </div>
+          </div>
+          <nav className="flex flex-col gap-1">
+            {stepNav.map((item) => {
+              const active = item.index === step;
+              return (
+                <button
+                  key={item.index}
+                  type="button"
+                  onClick={() => setStep(item.index)}
+                  className={[
+                    "flex items-center gap-3 rounded-lg px-4 py-3 text-left transition-all",
+                    active
+                      ? "translate-x-1 border-r-4 border-primary bg-surface-container-lowest font-bold text-primary"
+                      : "text-on-surface-variant hover:bg-white/40",
+                  ].join(" ")}
+                >
+                  <span className="material-symbols-outlined" style={{ fontVariationSettings: active ? "'FILL' 1" : "'FILL' 0" }}>
+                    {item.icon}
+                  </span>
+                  <span className="text-sm">{item.label}</span>
+                </button>
+              );
+            })}
+          </nav>
+        </aside>
+
+        <main className="flex-1 overflow-y-auto bg-surface-container-low px-4 py-8 md:px-16 md:py-12">
+          <div className="mx-auto max-w-4xl">
+            <header className="mb-10">
+              <div className="mb-4 flex items-center gap-4">
+                <span className="text-lg font-headline font-bold text-primary">{String(Math.min(step, totalSteps)).padStart(2, "0")}</span>
+                <div className="h-px flex-1 bg-outline-variant/30" />
+              </div>
+              <h1 className="mb-2 text-4xl font-headline font-extrabold tracking-tight text-on-background md:text-5xl">
+                {step === 1
+                  ? t("onb_step_basic")
+                  : step === 2
+                    ? t("onb_step_prefs")
+                    : step === 3
+                      ? t("onb_step_bank")
+                      : step === 4
+                        ? t("onb_step_docs")
+                        : t("onb_step_review")}
+              </h1>
+              <p className="max-w-xl text-on-surface-variant">
+                {step === 1
+                  ? "Define your professional identity. These details are used for compliance and verification."
+                  : step === 2
+                    ? "Set your preferences and location to personalize shift matching."
+                    : step === 3
+                      ? "Provide payout details securely for payroll processing."
+                      : step === 4
+                        ? "Upload required documents to complete compliance checks."
+                        : "Review all details before final submission."}
+              </p>
+            </header>
+
+            <section className="relative overflow-hidden rounded-xl bg-surface-container-lowest p-6 shadow-[0_10px_40px_rgba(43,52,55,0.06)] md:p-10">
+              <div className="pointer-events-none absolute -right-20 -top-20 h-56 w-56 rounded-full bg-primary/5 blur-3xl" />
+              <div className="relative z-10">
         {step === 1 && (
-          <div className="space-y-3">
-            <h2 className="text-lg font-semibold text-white">{t("onb_step_basic")}</h2>
-            <label className="text-xs text-slate-500">{t("wizard_name")}</label>
-            <input
-              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2"
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-            />
-            <label className="text-xs text-slate-500">{t("onb_nric")}</label>
-            <input
-              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 tracking-wider"
-              value={nric}
-              onChange={(e) => setNric(e.target.value)}
-              placeholder="S1234567D"
-            />
-            <label className="text-xs text-slate-500">{t("phone")}</label>
-            <input
-              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-            />
-            <label className="text-xs text-slate-500">Email</label>
-            <input
-              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
+          <div className="grid grid-cols-1 gap-x-10 gap-y-8 md:grid-cols-2">
+            <div className="group">
+              <label className="text-xs text-on-surface-variant">{t("wizard_name")}</label>
+              <input
+                className="w-full rounded-xl border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-on-surface"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                placeholder="Enter your full legal name"
+                type="text"
+              />
+            </div>
+            <div className="group">
+              <label className="text-xs text-on-surface-variant">{t("onb_nric")}</label>
+              <input
+                className="w-full rounded-xl border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-on-surface tracking-wider"
+                value={nric}
+                onChange={(e) => setNric(e.target.value)}
+                placeholder="SXXXX123A"
+                type="text"
+              />
+            </div>
+            <div className="group">
+              <label className="text-xs text-on-surface-variant">{t("phone")}</label>
+              <input
+                className="w-full rounded-xl border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-on-surface"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                type="tel"
+              />
+            </div>
+            <div className="group">
+              <label className="text-xs text-on-surface-variant">Email Address</label>
+              <input
+                className="w-full rounded-xl border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-on-surface"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                type="email"
+              />
+            </div>
           </div>
         )}
 
         {step === 2 && (
           <div className="space-y-3">
-            <h2 className="text-lg font-semibold text-white">{t("onb_step_prefs")}</h2>
-            <label className="text-xs text-slate-500">{t("wizard_languages")}</label>
+            <label className="text-xs text-on-surface-variant">{t("wizard_languages")}</label>
             <div className="flex gap-2">
               <input
-                className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2"
+                className="flex-1 rounded-xl border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-on-surface"
                 value={langInput}
                 onChange={(e) => setLangInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && addChip(langInput, setLangs, setLangInput)}
+                onKeyDown={(e) => e.key === "Enter" && addLanguage(langInput)}
+                placeholder="Search language"
               />
-              <button type="button" className="px-3 bg-slate-800 rounded-xl text-sm" onClick={() => addChip(langInput, setLangs, setLangInput)}>
+              <button
+                type="button"
+                className="px-3 rounded-xl bg-primary text-slate-950 text-sm font-semibold hover:brightness-95 active:scale-95"
+                onClick={() => addLanguage(langInput)}
+              >
                 +
               </button>
             </div>
+
+            {languageSuggestions.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {languageSuggestions.map((l) => (
+                  <button
+                    key={l}
+                    type="button"
+                    className="text-xs rounded-lg bg-primary/15 border border-primary/40 px-2 py-1 text-on-surface font-semibold hover:bg-primary/20"
+                    onClick={() => addLanguage(l)}
+                  >
+                    + {l}
+                  </button>
+                ))}
+              </div>
+            )}
+
             <div className="flex flex-wrap gap-1">
-              {langs.map((l) => (
-                <span key={l} className="text-xs bg-slate-800 px-2 py-1 rounded-lg">
-                  {l}
-                </span>
+              {langs.map((l, i) => (
+                <button
+                  key={`${l}-${i}`}
+                  type="button"
+                  className="text-xs rounded-lg bg-primary/15 border border-primary/40 px-2 py-1 text-on-surface font-semibold hover:bg-primary/20"
+                  onClick={() => removeLang(i)}
+                  title="Remove language"
+                >
+                  {l} x
+                </button>
               ))}
             </div>
-            <label className="text-xs text-slate-500">{t("wizard_job_types")}</label>
+            <label className="text-xs text-on-surface-variant">{t("wizard_job_types")}</label>
             <JobTypeMultiPicker
               t={t}
               selected={jobTypes}
               onChange={setJobTypes}
-              selectClassName="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm"
-              addButtonClassName="px-3 bg-slate-800 rounded-xl text-sm shrink-0"
-              chipButtonClassName="text-xs bg-slate-800 px-2 py-1 rounded-lg"
+              selectClassName="flex-1 min-w-0 rounded-xl border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-sm"
+              addButtonClassName="px-3 rounded-xl bg-surface-container-high text-sm shrink-0"
+              chipButtonClassName="text-xs bg-surface-container-high px-2 py-1 rounded-lg text-on-surface"
             />
-            <p className="text-xs text-slate-500">{t("onb_availability")}</p>
+            <p className="text-xs text-on-surface-variant">{t("onb_availability")}</p>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={availMorning} onChange={(e) => setAvailMorning(e.target.checked)} />
               {t("onb_av_morning")}
@@ -439,53 +625,44 @@ export default function WorkerOnboardingPage() {
               <input type="checkbox" checked={availWeekend} onChange={(e) => setAvailWeekend(e.target.checked)} />
               {t("onb_av_weekend")}
             </label>
-            <label className="text-xs text-slate-500">{t("wizard_skills")}</label>
-            <div className="flex gap-2">
-              <input
-                className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2"
-                value={skillInput}
-                onChange={(e) => setSkillInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && addChip(skillInput, setSkills, setSkillInput)}
-              />
-              <button type="button" className="px-3 bg-slate-800 rounded-xl text-sm" onClick={() => addChip(skillInput, setSkills, setSkillInput)}>
-                +
+            <label className="text-xs text-on-surface-variant">{t("wizard_skills")}</label>
+            <SkillMultiPicker
+              t={t}
+              selected={skills}
+              onChange={setSkills}
+              inputClassName="flex-1 rounded-xl border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-on-surface"
+              addButtonClassName="px-3 rounded-xl bg-surface-container-high text-sm shrink-0"
+              chipButtonClassName="text-xs bg-surface-container-high px-2 py-1 rounded-lg text-on-surface"
+            />
+            <label className="text-xs text-on-surface-variant">{t("onb_certs_optional")}</label>
+            <CertificationMultiPicker
+              t={t}
+              selected={certs}
+              onChange={setCerts}
+              inputClassName="flex-1 rounded-xl border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-on-surface"
+              addButtonClassName="px-3 rounded-xl bg-surface-container-high text-sm shrink-0"
+              chipButtonClassName="text-xs bg-surface-container-high px-2 py-1 rounded-lg text-on-surface"
+            />
+            <label className="text-xs text-on-surface-variant">{t("wizard_location")}</label>
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                className="rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-slate-950 hover:brightness-95 active:scale-95"
+                onClick={useCurrentLocation}
+              >
+                {t("map_use_my_location")}
               </button>
+              {mapGeoMsg && <p className="text-xs text-error">{mapGeoMsg}</p>}
             </div>
-            <div className="flex flex-wrap gap-1">
-              {skills.map((l) => (
-                <span key={l} className="text-xs bg-slate-800 px-2 py-1 rounded-lg">
-                  {l}
-                </span>
-              ))}
-            </div>
-            <label className="text-xs text-slate-500">{t("onb_certs_optional")}</label>
-            <div className="flex gap-2">
-              <input
-                className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2"
-                value={certInput}
-                onChange={(e) => setCertInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && addChip(certInput, setCerts, setCertInput)}
-              />
-              <button type="button" className="px-3 bg-slate-800 rounded-xl text-sm" onClick={() => addChip(certInput, setCerts, setCertInput)}>
-                +
-              </button>
-            </div>
-            <div className="flex flex-wrap gap-1">
-              {certs.map((l) => (
-                <span key={l} className="text-xs bg-slate-800 px-2 py-1 rounded-lg">
-                  {l}
-                </span>
-              ))}
-            </div>
-            <label className="text-xs text-slate-500">{t("wizard_location")}</label>
             <LocationMapPicker
               latitude={mapLat}
               longitude={mapLng}
               onChange={({ lat, lng }) => {
+                setMapGeoMsg(null);
                 setMapLat(lat);
                 setMapLng(lng);
               }}
-              lightMode={false}
+              lightMode
               height="220px"
               showGeolocationButton={false}
             />
@@ -494,48 +671,51 @@ export default function WorkerOnboardingPage() {
 
         {step === 3 && (
           <div className="space-y-3">
-            <h2 className="text-lg font-semibold text-white">{t("onb_step_bank")}</h2>
-            <label className="text-xs text-slate-500">{t("onb_bank_account")}</label>
+            <label className="text-xs text-on-surface-variant">{t("onb_bank_account")}</label>
             <input
               type="password"
-              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2"
+              className="w-full rounded-xl border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-on-surface"
               value={bankAccount}
               onChange={(e) => setBankAccount(e.target.value)}
               autoComplete="off"
             />
-            <label className="text-xs text-slate-500">{t("onb_bank_name_optional")}</label>
-            <input className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2" value={bankName} onChange={(e) => setBankName(e.target.value)} />
+            <label className="text-xs text-on-surface-variant">{t("onb_bank_name_optional")}</label>
+            <input
+              className="w-full rounded-xl border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-on-surface"
+              value={bankName}
+              onChange={(e) => setBankName(e.target.value)}
+            />
           </div>
         )}
 
         {step === 4 && (
           <div className="space-y-4">
-            <h2 className="text-lg font-semibold text-white">{t("onb_step_docs")}</h2>
-            <label className="flex items-center gap-2 text-sm text-slate-300">
+            <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={workPassNa} onChange={(e) => setWorkPassNa(e.target.checked)} />
               {t("onb_work_pass_na")}
             </label>
             {DOC_SLOTS.map((slot) => (
-              <div key={slot} className="border border-slate-800 rounded-xl p-3 space-y-2">
+              <div key={slot} className="border border-outline-variant/20 rounded-xl p-3 space-y-2 bg-surface-container-lowest">
                 <div className="flex justify-between items-center">
-                  <span className="text-sm font-medium text-slate-200">{t(`onb_doc_${slot}`)}</span>
-                  {docTypes.has(slot) && <span className="text-xs text-emerald-400">{t("onb_uploaded")}</span>}
+                  <span className="text-sm font-medium text-on-surface">{t(`onb_doc_${slot}`)}</span>
+                  {docTypes.has(slot) && <span className="text-xs text-emerald-700">{t("onb_uploaded")}</span>}
                 </div>
+                {uploadedDocNames[slot] ? (
+                  <p className="text-[11px] text-on-surface-variant line-clamp-1">{uploadedDocNames[slot]}</p>
+                ) : null}
                 <input
                   type="file"
                   accept="image/*,.pdf,application/pdf"
-                  capture="environment"
-                  className="text-xs w-full"
+                  className="w-full cursor-pointer text-xs file:cursor-pointer file:rounded-xl file:border file:border-outline-variant/30 file:bg-surface-container-high file:px-4 file:py-2 file:text-sm file:font-semibold file:text-on-surface hover:file:bg-surface-container-highest"
                   disabled={slot === "work_pass" && workPassNa}
                   onChange={(e) => {
                     const f = e.target.files?.[0];
                     if (f) uploadFile(slot, f);
-                    e.target.value = "";
                   }}
                 />
                 {(uploadPct[slot] ?? 0) > 0 && (uploadPct[slot] ?? 0) < 100 && (
-                  <div className="h-1 bg-slate-800 rounded overflow-hidden">
-                    <div className="h-full bg-sky-500 transition-all" style={{ width: `${uploadPct[slot]}%` }} />
+                  <div className="h-1 bg-surface-container-high rounded overflow-hidden">
+                    <div className="h-full bg-primary transition-all" style={{ width: `${uploadPct[slot]}%` }} />
                   </div>
                 )}
               </div>
@@ -545,31 +725,31 @@ export default function WorkerOnboardingPage() {
 
         {step === 5 && (
           <div className="space-y-4">
-            <h2 className="text-lg font-semibold text-white">{t("onb_step_review")}</h2>
-            <div className="text-sm space-y-2 text-slate-300">
+            <div className="text-sm space-y-2 text-on-surface-variant">
               <p>
-                <span className="text-slate-500">{t("wizard_name")}:</span> {fullName || "—"}
+                <span className="text-on-surface-variant">{t("wizard_name")}:</span> {fullName || "—"}
               </p>
               <p>
-                <span className="text-slate-500">{t("onb_nric")}:</span> {nric ? "••••" + nric.slice(-4) : "—"}
+                <span className="text-on-surface-variant">{t("onb_nric")}:</span> {nric ? "••••" + nric.slice(-4) : "—"}
               </p>
               <p>
-                <span className="text-slate-500">{t("phone")}:</span> {phone || "—"}
+                <span className="text-on-surface-variant">{t("phone")}:</span> {phone || "—"}
               </p>
               <p>
-                <span className="text-slate-500">Email:</span> {email || "—"}
+                <span className="text-on-surface-variant">Email:</span> {email || "—"}
               </p>
               <p>
-                <span className="text-slate-500">{t("wizard_languages")}:</span> {langs.join(", ") || "—"}
+                <span className="text-on-surface-variant">{t("wizard_languages")}:</span> {langs.join(", ") || "—"}
               </p>
               <p>
-                <span className="text-slate-500">{t("wizard_job_types")}:</span> {jobTypes.join(", ") || "—"}
+                <span className="text-on-surface-variant">{t("wizard_job_types")}:</span> {jobTypes.join(", ") || "—"}
               </p>
               <p>
-                <span className="text-slate-500">{t("onb_bank_account")}:</span> {bankAccount ? maskBank(bankAccount) : "—"}
+                <span className="text-on-surface-variant">{t("onb_bank_account")}:</span>{" "}
+                {bankAccount ? maskBank(bankAccount) : "—"}
               </p>
               <p>
-                <span className="text-slate-500">{t("onb_documents")}:</span> {[...docTypes].join(", ") || "—"}
+                <span className="text-on-surface-variant">{t("onb_documents")}:</span> {[...docTypes].join(", ") || "—"}
               </p>
             </div>
             <label className="flex items-start gap-2 text-sm">
@@ -585,35 +765,49 @@ export default function WorkerOnboardingPage() {
 
         {step === 6 && (
           <div className="text-center py-8 space-y-4">
-            <div className="text-4xl">✓</div>
-            <h2 className="text-xl font-bold text-white">{t("onb_done_title")}</h2>
-            <p className="text-sm text-slate-400">{t("onb_done_body")}</p>
-            <button type="button" className="bg-sky-600 text-slate-950 font-semibold px-6 py-3 rounded-xl" onClick={() => nav("/worker")}>
+            <div className="text-4xl text-primary">✓</div>
+            <h2 className="text-xl font-bold">{t("onb_done_title")}</h2>
+            <p className="text-sm text-on-surface-variant">{t("onb_done_body")}</p>
+            <button type="button" className="bg-primary text-on-primary font-semibold px-10 py-4 rounded-xl" onClick={() => nav("/worker")}>
               {t("onb_done_cta")}
             </button>
           </div>
         )}
 
-        {msg && <p className="text-sm text-red-400 mt-3">{msg}</p>}
+        {msg && <p className="text-sm text-error mt-3">{msg}</p>}
+              </div>
+            </section>
+          </div>
+        </main>
       </div>
 
       {step >= 1 && step <= 5 && (
-        <div className="sticky bottom-0 bg-slate-950/95 border-t border-slate-800 p-4 flex gap-2 mt-auto">
+        <div className="sticky bottom-0 z-30 border-t border-outline-variant/20 bg-surface-container-lowest/95 p-4">
+          <div className="mx-auto flex max-w-lg gap-2">
           {step > 1 && (
-            <button type="button" className="flex-1 bg-slate-800 py-3 rounded-xl text-sm" onClick={() => setStep((s) => s - 1)}>
+            <button
+              type="button"
+              className="flex-1 bg-surface-container-high py-3 rounded-xl text-sm font-semibold text-on-surface"
+              onClick={() => setStep((s) => s - 1)}
+            >
               {t("wizard_back")}
             </button>
           )}
           {step < 5 && (
-            <button type="button" className="flex-1 bg-sky-600 text-slate-950 font-semibold py-3 rounded-xl text-sm" onClick={() => setStep((s) => s + 1)}>
+            <button
+              type="button"
+              className="flex-1 bg-primary text-on-primary font-semibold py-3 rounded-xl text-sm"
+              onClick={() => setStep((s) => s + 1)}
+            >
               {t("wizard_next")}
             </button>
           )}
           {step === 5 && (
-            <button type="button" className="flex-1 bg-emerald-600 text-slate-950 font-semibold py-3 rounded-xl text-sm" onClick={finish}>
+            <button type="button" className="flex-1 bg-primary text-on-primary font-semibold py-3 rounded-xl text-sm" onClick={finish}>
               {t("onb_submit")}
             </button>
           )}
+          </div>
         </div>
       )}
     </div>

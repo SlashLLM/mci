@@ -9,10 +9,12 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -52,12 +54,6 @@ class JobOrderStatus(str, enum.Enum):
     cancelled = "cancelled"
 
 
-class DispatchMode(str, enum.Enum):
-    fcfs = "fcfs"
-    performance = "performance"
-    preferred = "preferred"
-
-
 class PayModel(str, enum.Enum):
     hourly = "hourly"
     per_shift = "per_shift"
@@ -95,6 +91,14 @@ class TimesheetStatus(str, enum.Enum):
     employer_endorsed = "employer_endorsed"
     ta_verified = "ta_verified"
     payment_released = "payment_released"
+    client_payroll_released = "client_payroll_released"
+
+
+class TaClientContractStatus(str, enum.Enum):
+    pending_ta = "pending_ta"
+    active = "active"
+    declined = "declined"
+    terminated = "terminated"
 
 
 class PaymentStatus(str, enum.Enum):
@@ -108,8 +112,9 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     username: Mapped[Optional[str]] = mapped_column(String(64), unique=True, index=True, nullable=True)
-    phone: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    phone: Mapped[Optional[str]] = mapped_column(String(32), unique=True, index=True, nullable=True)
     email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    display_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), index=True)
     hashed_password: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     locale: Mapped[str] = mapped_column(String(10), default="en")
@@ -117,6 +122,7 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     worker_profile: Mapped[Optional["WorkerProfile"]] = relationship(back_populates="user", uselist=False)
+    client_profile: Mapped[Optional["ClientProfile"]] = relationship(back_populates="user", uselist=False)
     client_org_id: Mapped[Optional[int]] = mapped_column(ForeignKey("client_organizations.id"), nullable=True)
     client_org: Mapped[Optional["ClientOrganization"]] = relationship(back_populates="users")
 
@@ -181,6 +187,59 @@ class ClientOrganization(Base):
     users: Mapped[list["User"]] = relationship(back_populates="client_org")
     job_orders: Mapped[list["JobOrder"]] = relationship(back_populates="client_org")
     preferred_workers: Mapped[list["PreferredWorker"]] = relationship(back_populates="client_org")
+    ta_contracts: Mapped[list["TaClientContract"]] = relationship(back_populates="client_org")
+
+
+class ClientProfile(Base):
+    __tablename__ = "client_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    company_name: Mapped[str] = mapped_column(String(255), default="")
+    contact_name: Mapped[str] = mapped_column(String(255), default="")
+    contact_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    contact_phone: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    address_line: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    location_lat: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    location_lng: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    billing_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    profile_completeness_pct: Mapped[int] = mapped_column(Integer, default=0)
+    pdpa_consent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    terms_accepted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    onboarding_completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user: Mapped["User"] = relationship(back_populates="client_profile")
+
+
+class TaClientContract(Base):
+    """At most one row with status=active per client_org_id (enforced via partial unique index)."""
+
+    __tablename__ = "ta_client_contracts"
+    __table_args__ = (
+        Index(
+            "uq_ta_client_contract_one_active_per_org",
+            "client_org_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    client_org_id: Mapped[int] = mapped_column(ForeignKey("client_organizations.id"), index=True)
+    ta_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    status: Mapped[TaClientContractStatus] = mapped_column(
+        Enum(TaClientContractStatus, name="taclientcontractstatus"),
+        default=TaClientContractStatus.pending_ta,
+    )
+    requested_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    responded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    client_org: Mapped["ClientOrganization"] = relationship(back_populates="ta_contracts")
 
 
 class PreferredWorker(Base):
@@ -214,7 +273,6 @@ class JobOrder(Base):
     uniform_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     special_instructions: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     geofence_radius_m: Mapped[int] = mapped_column(Integer, default=200)
-    dispatch_mode: Mapped[DispatchMode] = mapped_column(Enum(DispatchMode), default=DispatchMode.fcfs)
     acceptance_window_minutes: Mapped[int] = mapped_column(Integer, default=120)
     no_show_grace_minutes: Mapped[int] = mapped_column(Integer, default=15)
     overtime_multiplier: Mapped[float] = mapped_column(Float, default=1.5)
@@ -300,6 +358,8 @@ class AttendanceRecord(Base):
     clock_out_lng: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     total_hours: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     status: Mapped[AttendanceStatus] = mapped_column(Enum(AttendanceStatus), default=AttendanceStatus.unverified)
+    absent_after_grace_ta_notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    absence_strike_recorded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class TimesheetEntry(Base):

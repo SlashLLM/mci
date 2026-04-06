@@ -18,6 +18,29 @@ function apiBase(): string {
 
 const BASE = apiBase();
 
+/** Turn FastAPI `{"detail": ...}` JSON into a readable message for the UI. */
+export function parseFastApiErrorDetail(body: string): string {
+  const raw = body?.trim();
+  if (!raw) return "";
+  try {
+    const j = JSON.parse(raw) as { detail?: unknown };
+    const d = j.detail;
+    if (typeof d === "string") return d;
+    if (Array.isArray(d)) {
+      return d
+        .map((x) => {
+          if (x && typeof x === "object" && "msg" in x) return String((x as { msg: string }).msg);
+          return JSON.stringify(x);
+        })
+        .join("; ");
+    }
+    if (d != null && typeof d === "object") return JSON.stringify(d);
+  } catch {
+    /* not JSON */
+  }
+  return raw;
+}
+
 /** Same origin prefix as `api()` (e.g. `/api` in Vite dev, `` in prod). Use for FormData fetch. */
 export function apiUrl(path: string): string {
   const normalized = path.startsWith("/") ? path : `/${path}`;
@@ -25,6 +48,24 @@ export function apiUrl(path: string): string {
 }
 
 export type Role = "worker" | "ta" | "client" | "admin";
+
+function roleFromToken(token: string | null): Role | null {
+  if (!token) return null;
+  try {
+    const parts = token.split(".");
+    if (parts.length < 2) return null;
+    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+    const payload = JSON.parse(atob(padded)) as { role?: unknown };
+    const role = payload.role;
+    if (role === "worker" || role === "ta" || role === "client" || role === "admin") {
+      return role;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 export function getToken(): string | null {
   return localStorage.getItem("mci_token");
@@ -36,8 +77,14 @@ export function setToken(t: string | null) {
 }
 
 export function getRole(): Role | null {
-  const r = localStorage.getItem("mci_role") as Role | null;
-  return r;
+  const tokenRole = roleFromToken(getToken());
+  if (tokenRole) {
+    localStorage.setItem("mci_role", tokenRole);
+    return tokenRole;
+  }
+  const r = localStorage.getItem("mci_role");
+  if (r === "worker" || r === "ta" || r === "client" || r === "admin") return r;
+  return null;
 }
 
 export function setSession(token: string, role: string) {
@@ -78,7 +125,7 @@ export async function api<T>(
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || res.statusText);
+    throw new Error(parseFastApiErrorDetail(text) || res.statusText);
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;

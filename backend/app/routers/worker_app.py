@@ -26,7 +26,9 @@ from app.services.attendance_rules import (
     clock_in_earliest_utc,
     is_clock_in_too_early,
     is_late_window_without_clock_in,
+    is_past_clock_in_grace_deadline,
     is_past_shift_end,
+    late_threshold_utc,
 )
 from app.services.dispatch import application_next_rank, confirmed_count, waitlist_next_rank
 from app.services.job_status import refresh_job_order_fill_status
@@ -393,7 +395,9 @@ async def withdraw_marketplace_application(
 async def worker_clock_context(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(require_roles(UserRole.worker))],
-    assignment_id: int | None = Query(None, description="Optional confirmed assignment to target"),
+    assignment_id: int | None = Query(
+        None, description="Optional assignment to target (confirmed or completed after clock-out)",
+    ),
 ):
     r = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
     wp = r.scalar_one_or_none()
@@ -409,7 +413,7 @@ async def worker_clock_context(
             .where(
                 ShiftAssignment.id == assignment_id,
                 ShiftAssignment.worker_id == wp.id,
-                ShiftAssignment.status == AssignmentStatus.confirmed,
+                ShiftAssignment.status.in_((AssignmentStatus.confirmed, AssignmentStatus.completed)),
             )
         )
         a = r_sel.scalar_one_or_none()
@@ -443,6 +447,7 @@ async def worker_clock_context(
         and not has_out
         and not is_past_shift_end(now, shift.ends_at)
         and not is_clock_in_too_early(now, shift.starts_at)
+        and not is_past_clock_in_grace_deadline(now, shift.starts_at)
     )
 
     return {
@@ -450,9 +455,13 @@ async def worker_clock_context(
             "assignment_id": a.id,
             "shift_id": shift.id,
             "job_title": job.title,
+            "job_site_lat": job.location_lat,
+            "job_site_lng": job.location_lng,
+            "geofence_radius_m": job.geofence_radius_m,
             "starts_at": shift.starts_at.isoformat(),
             "ends_at": shift.ends_at.isoformat(),
             "clock_in_allowed_not_before": clock_in_earliest_utc(shift.starts_at).isoformat(),
+            "clock_in_grace_ends_at": late_threshold_utc(shift.starts_at).isoformat(),
             "already_clocked_in": has_in,
             "already_clocked_out": has_out,
             "is_late_window": is_late_window_without_clock_in(now, shift.starts_at, has_in),

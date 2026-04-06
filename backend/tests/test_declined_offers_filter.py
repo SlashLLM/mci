@@ -10,7 +10,6 @@ from app.db.base import Base
 from app.models import (
     AssignmentStatus,
     ClientOrganization,
-    DispatchMode,
     JobOrder,
     JobOrderStatus,
     PayModel,
@@ -73,7 +72,6 @@ async def test_declined_hidden_when_worker_has_confirmed_assignment(sqlite_sessi
         location_lng=103.0,
         workers_required_total=1,
         pay_model=PayModel.hourly,
-        dispatch_mode=DispatchMode.fcfs,
         hourly_rate=15.0,
         status=JobOrderStatus.open,
     )
@@ -141,7 +139,6 @@ async def test_declined_shown_when_no_assignment(sqlite_session: AsyncSession):
         location_lng=103.0,
         workers_required_total=1,
         pay_model=PayModel.hourly,
-        dispatch_mode=DispatchMode.fcfs,
         hourly_rate=15.0,
         status=JobOrderStatus.open,
     )

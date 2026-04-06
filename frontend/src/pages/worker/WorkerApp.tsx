@@ -3,10 +3,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Html5Qrcode } from "html5-qrcode";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import { Link, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, apiUrl, getToken } from "../../api";
 import { JobTypeMultiPicker } from "../../components/jobTypes/JobTypeMultiPicker";
+import { ClockSiteMap } from "../../components/maps/ClockSiteMap";
 import { DEFAULT_MAP_CENTER, LocationMapPicker } from "../../components/maps/LocationMapPicker";
+import { CertificationMultiPicker } from "../../components/certifications/CertificationMultiPicker";
+import { SkillMultiPicker } from "../../components/skills/SkillMultiPicker";
 import { isAllowedJobType, JOB_TYPES } from "../../constants/jobTypes";
 import WorkerPortalLayout from "../../components/worker/WorkerPortalLayout";
 import WorkerOnboardingPage from "./WorkerOnboardingPage";
@@ -54,6 +57,9 @@ function parseQrClockApiError(
             })
           : t("clock_page_geofence_blocked_generic");
       return { text, kind: "warning" };
+    }
+    if (o.code === "clock_in_grace_expired") {
+      return { text: t("clock_page_grace_expired"), kind: "warning" };
     }
     if (typeof o.message === "string") {
       return { text: o.message, kind: "error" };
@@ -105,11 +111,26 @@ type TimesheetRow = {
   id: number;
   gross_pay: number;
   status: string;
+  job_title?: string | null;
+  shift_date?: string | null;
   shift_starts_at?: string | null;
   shift_ends_at?: string | null;
   clock_in_at?: string | null;
   clock_out_at?: string | null;
 };
+
+function localDateYmd(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function timesheetRowYmd(x: TimesheetRow): string | null {
+  if (x.shift_date) return x.shift_date;
+  if (x.shift_starts_at) return x.shift_starts_at.slice(0, 10);
+  return null;
+}
 
 const CARD_IMAGES = [
   "https://lh3.googleusercontent.com/aida-public/AB6AXuA20B4ehqrtncvnYyi0LDDRUZKR2CTz60StntahrGjPgQKihGi0MVG0K7kZIwXbPUIIDIA5LbpmmrzFlkQ6Pii8sTUNtlu3cWBE5ur6PuGotbOjdHGurS7RrVxoim6oHROMct58MfwgQMlIcAgxIH6w7is2gbFfRko64TfQgXVN1Zcqa99vhXhU1pPYLkVdCKydExpy8Z7o82NwnqDmkp7P8lVuhRbv8nSL4dIz0ULfJRGRlp_Sht0byb2kBP2AdcT_u0tSgirzVWs",
@@ -138,7 +159,7 @@ function PageHeader({
 }: {
   eyebrow: string;
   title: string;
-  description: string;
+  description?: string;
   extra?: ReactNode;
 }) {
   return (
@@ -146,7 +167,7 @@ function PageHeader({
       <div className="space-y-2">
         <span className="text-xs font-bold uppercase tracking-[0.2em] text-primary">{eyebrow}</span>
         <h1 className="font-headline text-4xl font-extrabold tracking-tight text-on-background md:text-5xl">{title}</h1>
-        <p className="max-w-md text-on-surface-variant">{description}</p>
+        {description ? <p className="max-w-md text-on-surface-variant">{description}</p> : null}
       </div>
       {extra}
     </header>
@@ -568,8 +589,8 @@ function MarketplacePage() {
     rows.length > 0 && rows.every((s) => s.distance_m == null) ? (
       <p className="mb-4 text-sm text-on-surface-variant">
         {t("marketplace_set_location_hint_prefix")}{" "}
-        <Link to="/worker/settings" className="font-semibold text-primary underline underline-offset-2">
-          {t("settings")}
+        <Link to="/worker/profile?tab=account" className="font-semibold text-primary underline underline-offset-2">
+          {t("profile")}
         </Link>
         {t("marketplace_set_location_hint_suffix")}
       </p>
@@ -965,40 +986,182 @@ function ShiftsPage() {
 }
 
 function EarningsPage() {
+  const { t } = useTranslation();
   const [rows, setRows] = useState<TimesheetRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [periodFrom, setPeriodFrom] = useState("");
+  const [periodTo, setPeriodTo] = useState("");
+
   useEffect(() => {
     api<TimesheetRow[]>("/timesheets")
       .then(setRows)
       .catch((e) => setErr(String(e)));
   }, []);
+
+  const totalAllTime = useMemo(() => rows.reduce((s, x) => s + (x.gross_pay || 0), 0), [rows]);
+
+  const periodFilterActive = Boolean(periodFrom || periodTo);
+
+  const displayRows = useMemo(() => {
+    if (!periodFrom && !periodTo) return rows;
+    return rows.filter((x) => {
+      const ymd = timesheetRowYmd(x);
+      if (!ymd) return false;
+      if (periodFrom && ymd < periodFrom) return false;
+      if (periodTo && ymd > periodTo) return false;
+      return true;
+    });
+  }, [rows, periodFrom, periodTo]);
+
+  const periodTotal = useMemo(() => displayRows.reduce((s, x) => s + (x.gross_pay || 0), 0), [displayRows]);
+
+  const sortedDisplay = useMemo(
+    () =>
+      [...displayRows].sort((a, b) => {
+        const da = timesheetRowYmd(a) || "";
+        const db = timesheetRowYmd(b) || "";
+        return db.localeCompare(da);
+      }),
+    [displayRows],
+  );
+
+  function presetThisMonth() {
+    const now = new Date();
+    setPeriodFrom(localDateYmd(new Date(now.getFullYear(), now.getMonth(), 1)));
+    setPeriodTo(localDateYmd(now));
+  }
+
+  function presetLast30Days() {
+    const now = new Date();
+    const start = new Date(now);
+    start.setDate(start.getDate() - 30);
+    setPeriodFrom(localDateYmd(start));
+    setPeriodTo(localDateYmd(now));
+  }
+
+  function clearPeriod() {
+    setPeriodFrom("");
+    setPeriodTo("");
+  }
+
+  const shiftDayLabel = (x: TimesheetRow) => {
+    const ymd = timesheetRowYmd(x);
+    if (!ymd) return "—";
+    try {
+      return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(`${ymd}T12:00:00`));
+    } catch {
+      return ymd;
+    }
+  };
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-10 md:px-8">
       <PageHeader
-        eyebrow="Pay"
-        title="Earnings"
-        description="Timesheet entries and payout status for your completed work."
+        eyebrow={t("worker_earnings_eyebrow")}
+        title={t("worker_earnings_title")}
+        description={t("worker_earnings_description")}
       />
       {err && <p className="mb-6 text-sm text-error">{err}</p>}
+
+      <div className="mb-8 grid gap-4 md:grid-cols-2">
+        <div className="rounded-2xl border border-outline-variant/15 bg-surface-container-lowest p-6 shadow-sm">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">{t("worker_earnings_total_all_time")}</p>
+          <p className="mt-2 font-headline text-3xl font-extrabold tracking-tight text-on-surface">{fmtMoney(totalAllTime)}</p>
+        </div>
+        {periodFilterActive ? (
+          <div className="rounded-2xl border border-primary/25 bg-primary-container/15 p-6 shadow-sm">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">{t("worker_earnings_period_total")}</p>
+            <p className="mt-2 font-headline text-3xl font-extrabold tracking-tight text-primary">{fmtMoney(periodTotal)}</p>
+            <p className="mt-2 text-xs text-on-surface-variant">
+              {periodFrom || "…"} — {periodTo || "…"}
+            </p>
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-dashed border-outline-variant/30 bg-surface-container-low/40 p-6">
+            <p className="text-sm font-medium text-on-surface">{t("worker_earnings_period_hint_title")}</p>
+            <p className="mt-1 text-xs text-on-surface-variant">{t("worker_earnings_period_hint_body")}</p>
+          </div>
+        )}
+      </div>
+
+      <section className="mb-10 rounded-2xl border border-outline-variant/15 bg-surface-container-lowest p-5 md:p-6">
+        <h2 className="font-headline text-sm font-bold text-on-surface">{t("worker_earnings_filter_heading")}</h2>
+        <div className="mt-4 flex flex-col gap-4 md:flex-row md:flex-wrap md:items-end">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-on-surface-variant" htmlFor="earnings-from">
+              {t("worker_earnings_filter_from")}
+            </label>
+            <input
+              id="earnings-from"
+              type="date"
+              className="rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm text-on-surface"
+              value={periodFrom}
+              onChange={(e) => setPeriodFrom(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-on-surface-variant" htmlFor="earnings-to">
+              {t("worker_earnings_filter_to")}
+            </label>
+            <input
+              id="earnings-to"
+              type="date"
+              className="rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm text-on-surface"
+              value={periodTo}
+              onChange={(e) => setPeriodTo(e.target.value)}
+            />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="rounded-xl border border-outline-variant/30 bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:bg-surface-variant"
+              onClick={presetThisMonth}
+            >
+              {t("worker_earnings_preset_this_month")}
+            </button>
+            <button
+              type="button"
+              className="rounded-xl border border-outline-variant/30 bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:bg-surface-variant"
+              onClick={presetLast30Days}
+            >
+              {t("worker_earnings_preset_last_30")}
+            </button>
+            <button
+              type="button"
+              className="rounded-xl border border-outline-variant/30 px-3 py-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-container-high"
+              onClick={clearPeriod}
+            >
+              {t("worker_earnings_clear_period")}
+            </button>
+          </div>
+        </div>
+      </section>
+
       <ul className="space-y-3">
-        {rows.map((x) => (
+        {sortedDisplay.map((x) => (
           <li
             key={x.id}
             className="flex flex-col gap-2 rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between"
           >
             <div className="min-w-0">
-              <span className="font-mono text-sm text-on-surface-variant">#{x.id}</span>
+              {x.job_title ? <p className="font-semibold text-on-surface">{x.job_title}</p> : null}
+              <p className="text-xs text-on-surface-variant">
+                {t("worker_earnings_shift_day")}: {shiftDayLabel(x)}
+              </p>
+              <span className="mt-1 inline-block font-mono text-sm text-on-surface-variant">#{x.id}</span>
               {(x.clock_in_at || x.clock_out_at) && (
                 <p className="mt-1 text-xs text-on-surface-variant">
                   {x.clock_in_at && (
                     <span>
-                      In: {new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "short" }).format(new Date(x.clock_in_at))}
+                      {t("worker_earnings_clock_in_short")}{" "}
+                      {new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "short" }).format(new Date(x.clock_in_at))}
                     </span>
                   )}
                   {x.clock_in_at && x.clock_out_at ? " · " : ""}
                   {x.clock_out_at && (
                     <span>
-                      Out: {new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "short" }).format(new Date(x.clock_out_at))}
+                      {t("worker_earnings_clock_out_short")}{" "}
+                      {new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "short" }).format(new Date(x.clock_out_at))}
                     </span>
                   )}
                 </p>
@@ -1011,7 +1174,10 @@ function EarningsPage() {
           </li>
         ))}
       </ul>
-      {rows.length === 0 && !err && <p className="text-on-surface-variant">No timesheets yet.</p>}
+      {rows.length === 0 && !err && <p className="text-on-surface-variant">{t("worker_earnings_empty_all")}</p>}
+      {rows.length > 0 && sortedDisplay.length === 0 && !err && (
+        <p className="text-on-surface-variant">{t("worker_earnings_empty_period")}</p>
+      )}
     </div>
   );
 }
@@ -1020,16 +1186,18 @@ type ClockAssignment = {
   assignment_id: number;
   shift_id: number;
   job_title: string;
+  job_site_lat: number;
+  job_site_lng: number;
+  geofence_radius_m: number;
   starts_at: string;
   ends_at: string;
   clock_in_allowed_not_before: string;
+  clock_in_grace_ends_at: string;
   already_clocked_in: boolean;
   already_clocked_out: boolean;
   is_late_window: boolean;
   can_clock_in_now: boolean;
 };
-
-const LATE_AFTER_START_MS = 10 * 60 * 1000;
 
 const QR_READER_ELEMENT_ID = "worker-qr-reader";
 
@@ -1041,11 +1209,18 @@ type ClockOutPaySummary = {
   timesheet_created: boolean;
 };
 
+function clockAssignmentIdFromSearch(search: string): number {
+  const sp = new URLSearchParams(search);
+  const raw = sp.get("assignment") ?? sp.get("assignment_id");
+  if (!raw?.trim()) return NaN;
+  const n = Number.parseInt(raw.trim(), 10);
+  return Number.isFinite(n) && n > 0 ? n : NaN;
+}
+
 function ClockPage() {
   const { t } = useTranslation();
-  const [searchParams] = useSearchParams();
-  const assignmentParam = searchParams.get("assignment");
-  const parsedAssignment = assignmentParam ? Number.parseInt(assignmentParam, 10) : NaN;
+  const location = useLocation();
+  const parsedAssignment = useMemo(() => clockAssignmentIdFromSearch(location.search), [location.search]);
 
   const [ctx, setCtx] = useState<{ assignment: ClockAssignment | null } | null>(null);
   const [ctxErr, setCtxErr] = useState<string | null>(null);
@@ -1090,30 +1265,45 @@ function ClockPage() {
       setGeoLoading(false);
       return;
     }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setLat(pos.coords.latitude);
-        setLng(pos.coords.longitude);
-        setGeoLoading(false);
-      },
-      (err) => {
-        setGeoLoading(false);
-        if (err.code === 1) setGeoErr(t("map_geo_denied"));
-        else setGeoErr(t("map_geo_error"));
-      },
-      { enableHighAccuracy: true, timeout: 25000, maximumAge: 0 },
-    );
+    let watchId: number | null = null;
+    try {
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          setLat(pos.coords.latitude);
+          setLng(pos.coords.longitude);
+          setGeoLoading(false);
+          setGeoErr(null);
+        },
+        (err) => {
+          setGeoLoading(false);
+          if (err.code === 1) setGeoErr(t("map_geo_denied"));
+          else setGeoErr(t("map_geo_error"));
+        },
+        { enableHighAccuracy: true, timeout: 25_000, maximumAge: 10_000 },
+      );
+    } catch {
+      // Some browsers throw synchronously when geolocation is unavailable (e.g. insecure context).
+      setGeoLoading(false);
+      setGeoErr(t("map_geo_error"));
+    }
+    return () => {
+      if (watchId != null) navigator.geolocation.clearWatch(watchId);
+    };
   }, [t]);
 
   const a = ctx?.assignment ?? null;
   const now = Date.now();
   const openMs = a ? new Date(a.clock_in_allowed_not_before).getTime() : 0;
   const endMs = a ? new Date(a.ends_at).getTime() : 0;
-  const startMs = a ? new Date(a.starts_at).getTime() : 0;
-  const canClockIn =
-    !!a && !a.already_clocked_in && !a.already_clocked_out && now >= openMs && now < endMs;
-  const showLateWarning = !!a && !a.already_clocked_in && now > startMs + LATE_AFTER_START_MS;
-  const canScan = !!a && !a.already_clocked_out && lat != null && lng != null && !busy;
+  const canClockIn = !!a && !a.already_clocked_in && !a.already_clocked_out && a.can_clock_in_now;
+  const showLateWarning = !!a && !a.already_clocked_in && a.is_late_window && a.can_clock_in_now;
+  const canScan =
+    !!a &&
+    !a.already_clocked_out &&
+    (a.already_clocked_in || a.can_clock_in_now) &&
+    lat != null &&
+    lng != null &&
+    !busy;
 
   const stopScanner = useCallback(async () => {
     if (scannerRef.current) {
@@ -1276,16 +1466,37 @@ function ClockPage() {
               <p className="text-sm font-semibold text-primary">{t("clock_page_scan_out_hint")}</p>
             )}
             {a.already_clocked_out && <p className="text-sm font-semibold text-on-surface-variant">Shift completed.</p>}
-            {!a.already_clocked_in && !canClockIn && now < endMs && (
+            {!a.already_clocked_in && !canClockIn && now < openMs && (
               <p className="text-sm text-amber-800 dark:text-amber-200">
                 {t("clock_page_available_at", { time: openTimeLabel })}
               </p>
             )}
+            {!a.already_clocked_in && !canClockIn && now >= openMs && now < endMs && (
+              <p className="text-sm text-error">{t("clock_page_grace_expired")}</p>
+            )}
             {showLateWarning && <p className="text-sm text-error">{t("clock_page_late_warning")}</p>}
+            {Number.isFinite(a.job_site_lat) && Number.isFinite(a.job_site_lng) && (
+              <ClockSiteMap
+                key={a.assignment_id}
+                jobSiteLat={a.job_site_lat}
+                jobSiteLng={a.job_site_lng}
+                geofenceRadiusM={
+                  typeof a.geofence_radius_m === "number" && a.geofence_radius_m > 0 ? a.geofence_radius_m : 200
+                }
+                youLat={lat}
+                youLng={lng}
+                height="260px"
+                className="pt-2"
+              />
+            )}
           </div>
         )}
         <p className="text-xs text-on-surface-variant">
-          {geoLoading ? t("clock_page_gps_loading") : lat != null && lng != null ? "GPS ready." : geoErr || ""}
+          {geoLoading
+            ? t("clock_page_gps_loading")
+            : lat != null && lng != null
+              ? t("clock_page_gps_ready")
+              : geoErr || ""}
         </p>
         {geoErr && <p className="text-sm text-error">{geoErr}</p>}
         <div className="space-y-4 rounded-xl border border-outline-variant/10 bg-surface-container-low p-4">
@@ -1367,6 +1578,9 @@ function ClockPage() {
   );
 }
 
+type ProfileCompletenessItem = { id: string; done: boolean; required_for_compliance: boolean };
+type ProfileCompletenessPayload = { profile_completeness_pct: number; items: ProfileCompletenessItem[] };
+
 type WorkerProfileSnapshot = {
   full_name: string;
   phone: string;
@@ -1381,16 +1595,48 @@ type WorkerProfileSnapshot = {
   bank_name: string | null;
   work_pass_not_applicable: boolean;
   profile_completeness_pct: number;
+  pdpa_consent: boolean;
 };
 
-function SettingsPage() {
+type WorkerReputation = {
+  rating_avg: number;
+  tier: string;
+  ratings: Array<{
+    stars: number;
+    comment: string | null;
+    created_at: string;
+    client_org_id: number | null;
+    client_org_name: string | null;
+    job_title: string | null;
+    shift_starts_at: string | null;
+  }>;
+  preferred_by_clients: Array<{ client_org_id: number; name: string }>;
+};
+
+const ACCOUNT_STEPS = 7;
+
+function ProfileAccountTab() {
   const { t } = useTranslation();
+  const [step, setStep] = useState(1);
   const [snapshot, setSnapshot] = useState<WorkerProfileSnapshot | null>(null);
+  const [langsText, setLangsText] = useState("");
   const [mapLat, setMapLat] = useState(DEFAULT_MAP_CENTER.lat);
   const [mapLng, setMapLng] = useState(DEFAULT_MAP_CENTER.lng);
+  const [pdpaAck, setPdpaAck] = useState(false);
+  const [docs, setDocs] = useState<{ id: number; doc_type: string }[]>([]);
+  const [completenessDetail, setCompletenessDetail] = useState<ProfileCompletenessPayload | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  async function refreshCompleteness() {
+    try {
+      const c = await api<ProfileCompletenessPayload>("/workers/me/profile/completeness");
+      setCompletenessDetail(c);
+    } catch {
+      /* ignore */
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -1399,6 +1645,7 @@ function SettingsPage() {
       .then((p) => {
         if (cancelled) return;
         setSnapshot(p);
+        setLangsText((p.languages || []).join(", "));
         if (p.location_lat != null && p.location_lng != null) {
           setMapLat(p.location_lat);
           setMapLng(p.location_lng);
@@ -1407,12 +1654,14 @@ function SettingsPage() {
       .catch((e) => {
         if (!cancelled) setLoadErr(String(e));
       });
+    api<{ id: number; doc_type: string }[]>("/workers/me/documents").then(setDocs).catch(() => {});
+    void refreshCompleteness();
     return () => {
       cancelled = true;
     };
   }, []);
 
-  async function saveLocation() {
+  async function savePartial() {
     if (!snapshot) {
       setMsg(t("settings_location_load_first"));
       return;
@@ -1426,20 +1675,30 @@ function SettingsPage() {
           full_name: snapshot.full_name,
           phone: snapshot.phone,
           email: snapshot.email,
-          languages: snapshot.languages,
+          languages: langsText
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean),
           job_type_preferences: snapshot.job_type_preferences,
           skills: snapshot.skills,
           certifications: snapshot.certifications,
-          availability: snapshot.availability,
+          availability: snapshot.availability && Object.keys(snapshot.availability).length ? snapshot.availability : { always: true },
           bank_name: snapshot.bank_name ?? undefined,
           work_pass_not_applicable: snapshot.work_pass_not_applicable,
           location_lat: mapLat,
           location_lng: mapLng,
         },
       });
-      const p = await api<WorkerProfileSnapshot>("/workers/me/profile");
+      let p = await api<WorkerProfileSnapshot>("/workers/me/profile");
       setSnapshot(p);
+      setLangsText((p.languages || []).join(", "));
+      if (pdpaAck && !p.pdpa_consent) {
+        await api("/workers/me/pdpa-consent", { method: "POST" });
+        p = await api<WorkerProfileSnapshot>("/workers/me/profile");
+        setSnapshot(p);
+      }
       setMsg(t("settings_location_saved"));
+      await refreshCompleteness();
     } catch (e) {
       setMsg(String(e));
     } finally {
@@ -1447,21 +1706,131 @@ function SettingsPage() {
     }
   }
 
-  const box = "rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-8 shadow-sm";
+  const inputClass =
+    "w-full rounded-xl border border-outline-variant/30 bg-surface-container-low px-4 py-3 text-on-surface placeholder:text-on-surface-variant focus:ring-2 focus:ring-primary";
+
+  if (loadErr) {
+    return <p className="text-sm text-error">{loadErr}</p>;
+  }
+  if (!snapshot) {
+    return <p className="text-on-surface-variant">{t("settings_loading")}</p>;
+  }
+
+  const profilePct = completenessDetail?.profile_completeness_pct ?? snapshot.profile_completeness_pct;
+  const checklistItems = completenessDetail?.items ?? [];
 
   return (
-    <div className="mx-auto max-w-3xl px-4 py-10 md:px-8">
-      <PageHeader
-        eyebrow="Account"
-        title={t("settings")}
-        description={t("settings_location_intro")}
-      />
-      {loadErr && <p className="mb-4 text-sm text-error">{loadErr}</p>}
-      {!snapshot && !loadErr && <p className="text-on-surface-variant">{t("settings_loading")}</p>}
-      {snapshot && (
-        <div className={box}>
-          <h2 className="mb-2 text-sm font-semibold text-on-surface">{t("settings_location_section")}</h2>
-          <p className="mb-4 text-xs text-on-surface-variant">{t("settings_location_gps_hint")}</p>
+    <div className="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-8 shadow-sm">
+      <div className="mb-2 flex items-center justify-between gap-2 text-xs text-on-surface-variant">
+        <span>{t("onb_progress_label")}</span>
+        <span className="font-mono text-primary">{profilePct}%</span>
+      </div>
+      <div className="mb-6 h-2 overflow-hidden rounded-full bg-surface-container-high">
+        <div className="h-full bg-primary transition-all" style={{ width: `${profilePct}%` }} />
+      </div>
+      {checklistItems.length > 0 && (
+        <div className="mb-8 rounded-xl border border-outline-variant/15 bg-surface-container-low/80 p-4">
+          <p className="text-sm font-semibold text-on-surface mb-3">{t("completeness_checklist_title")}</p>
+          <ul className="space-y-2 max-h-56 overflow-y-auto pr-1">
+            {checklistItems.map((row) => {
+              const labelKey = `completeness_item_${row.id}` as const;
+              return (
+                <li key={row.id} className="flex items-start gap-2 text-sm">
+                  <span className={row.done ? "text-primary shrink-0" : "text-on-surface-variant shrink-0"} aria-hidden>
+                    {row.done ? "✓" : "○"}
+                  </span>
+                  <span className={row.done ? "text-on-surface-variant line-through" : "text-on-surface"}>
+                    {t(labelKey)}
+                    <span className="ml-1 text-[10px] uppercase tracking-wide text-on-surface-variant">
+                      {row.required_for_compliance ? `· ${t("completeness_required")}` : `· ${t("completeness_optional")}`}
+                    </span>
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+      <p className="mb-6 text-sm text-on-surface-variant">{t("step_x_of_y", { current: step, total: ACCOUNT_STEPS })}</p>
+
+      {step === 1 && (
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-sm text-on-surface-variant">{t("wizard_name")}</label>
+            <input
+              className={`${inputClass} text-lg`}
+              value={snapshot.full_name}
+              onChange={(e) => setSnapshot((s) => (s ? { ...s, full_name: e.target.value } : s))}
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm text-on-surface-variant">{t("worker_profile_phone")}</label>
+            <input
+              className={inputClass}
+              value={snapshot.phone}
+              onChange={(e) => setSnapshot((s) => (s ? { ...s, phone: e.target.value } : s))}
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm text-on-surface-variant">{t("worker_profile_email")}</label>
+            <input
+              className={inputClass}
+              type="email"
+              value={snapshot.email ?? ""}
+              onChange={(e) => setSnapshot((s) => (s ? { ...s, email: e.target.value || null } : s))}
+            />
+          </div>
+        </div>
+      )}
+      {step === 2 && (
+        <div className="space-y-2">
+          <label className="text-sm text-on-surface-variant">{t("wizard_languages")}</label>
+          <input className={inputClass} value={langsText} onChange={(e) => setLangsText(e.target.value)} />
+        </div>
+      )}
+      {step === 3 && (
+        <div className="space-y-2">
+          <label className="text-sm text-on-surface-variant">{t("wizard_job_types")}</label>
+          <JobTypeMultiPicker
+            t={t}
+            selected={(snapshot.job_type_preferences || []).filter(isAllowedJobType)}
+            onChange={(job_type_preferences) => setSnapshot((s) => (s ? { ...s, job_type_preferences } : s))}
+            selectClassName={`${inputClass} flex-1 min-w-0`}
+            addButtonClassName="rounded-xl border border-outline-variant/30 bg-surface-container-high px-4 py-3 font-medium text-on-surface shrink-0"
+            chipButtonClassName="text-xs bg-surface-container-high px-2 py-1 rounded-lg text-on-surface"
+          />
+        </div>
+      )}
+      {step === 4 && (
+        <div className="space-y-6">
+          <div className="space-y-2">
+            <label className="text-sm text-on-surface-variant">{t("wizard_skills")}</label>
+            <SkillMultiPicker
+              t={t}
+              selected={snapshot.skills}
+              onChange={(skills) => setSnapshot((s) => (s ? { ...s, skills } : s))}
+              inputClassName={inputClass}
+              addButtonClassName="rounded-xl border border-outline-variant/30 bg-surface-container-high px-4 py-3 font-medium text-on-surface shrink-0"
+              chipButtonClassName="text-xs bg-surface-container-high px-2 py-1 rounded-lg text-on-surface"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm text-on-surface-variant">{t("wizard_certifications")}</label>
+            <CertificationMultiPicker
+              t={t}
+              selected={snapshot.certifications}
+              onChange={(certifications) => setSnapshot((s) => (s ? { ...s, certifications } : s))}
+              inputClassName={inputClass}
+              addButtonClassName="rounded-xl border border-outline-variant/30 bg-surface-container-high px-4 py-3 font-medium text-on-surface shrink-0"
+              chipButtonClassName="text-xs bg-surface-container-high px-2 py-1 rounded-lg text-on-surface"
+            />
+          </div>
+        </div>
+      )}
+      {step === 5 && (
+        <div className="space-y-2">
+          <label className="text-sm text-on-surface-variant">{t("wizard_location")}</label>
+          <p className="text-xs text-on-surface-variant">{t("settings_location_gps_hint")}</p>
           <LocationMapPicker
             latitude={mapLat}
             longitude={mapLng}
@@ -1473,201 +1842,214 @@ function SettingsPage() {
             height="280px"
             showGeolocationButton
           />
-          <button
-            type="button"
-            disabled={saving}
-            className="mt-6 w-full rounded-xl bg-primary px-4 py-3 font-semibold text-on-primary disabled:opacity-50 sm:w-auto"
-            onClick={saveLocation}
-          >
-            {saving ? "…" : t("settings_save_location")}
-          </button>
-          {msg && <p className="mt-4 text-sm text-primary">{msg}</p>}
         </div>
       )}
+      {step === 6 && (
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-sm text-on-surface-variant">{t("worker_profile_bank_name")}</label>
+            <input
+              className={inputClass}
+              value={snapshot.bank_name ?? ""}
+              onChange={(e) => setSnapshot((s) => (s ? { ...s, bank_name: e.target.value || null } : s))}
+            />
+          </div>
+          <label className="flex items-center gap-2 text-sm text-on-surface">
+            <input
+              type="checkbox"
+              checked={snapshot.work_pass_not_applicable}
+              onChange={(e) => setSnapshot((s) => (s ? { ...s, work_pass_not_applicable: e.target.checked } : s))}
+              className="rounded border-outline-variant"
+            />
+            {t("worker_profile_work_pass_na")}
+          </label>
+        </div>
+      )}
+      {step === 7 && (
+        <div className="space-y-3">
+          {snapshot.pdpa_consent ? (
+            <p className="text-sm text-on-surface-variant">{t("wizard_pdpa")} — saved.</p>
+          ) : (
+            <label className="flex items-center gap-2 text-sm text-on-surface">
+              <input type="checkbox" checked={pdpaAck} onChange={(e) => setPdpaAck(e.target.checked)} className="rounded border-outline-variant" />
+              {t("wizard_pdpa")}
+            </label>
+          )}
+          <p className="text-xs text-on-surface-variant">
+            Documents: upload via API `/workers/me/documents` or future UI. Listed: {docs.length}
+          </p>
+        </div>
+      )}
+
+      <div className="mt-8 flex flex-wrap gap-2">
+        {step > 1 && (
+          <button type="button" className="rounded-xl bg-surface-container-high px-4 py-2 font-medium text-on-surface" onClick={() => setStep((s) => s - 1)}>
+            {t("wizard_back")}
+          </button>
+        )}
+        {step < ACCOUNT_STEPS && (
+          <button type="button" className="rounded-xl bg-primary px-4 py-2 font-medium text-on-primary" onClick={() => setStep((s) => s + 1)}>
+            {t("wizard_next")}
+          </button>
+        )}
+        <button
+          type="button"
+          disabled={saving}
+          className="rounded-xl bg-secondary-container px-4 py-2 font-medium text-on-secondary-container disabled:opacity-50"
+          onClick={() => void savePartial()}
+        >
+          {saving ? "…" : t("wizard_save")}
+        </button>
+      </div>
+      {msg && <p className="mt-4 text-sm text-primary">{msg}</p>}
     </div>
   );
 }
 
-const TOTAL_STEPS = 6;
-
-function ProfilePage() {
+function ReputationTab() {
   const { t } = useTranslation();
-  const [step, setStep] = useState(1);
-  const [fullName, setFullName] = useState("");
-  const [langs, setLangs] = useState("en, zh");
-  const [jobTypePrefs, setJobTypePrefs] = useState<string[]>([]);
-  const [skills, setSkills] = useState("packing");
-  const [mapLat, setMapLat] = useState(DEFAULT_MAP_CENTER.lat);
-  const [mapLng, setMapLng] = useState(DEFAULT_MAP_CENTER.lng);
-  const [pdpa, setPdpa] = useState(false);
-  const [completeness, setCompleteness] = useState<number | null>(null);
-  const [docs, setDocs] = useState<{ id: number; doc_type: string }[]>([]);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [data, setData] = useState<WorkerReputation | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    api<{
-      full_name: string;
-      profile_completeness_pct: number;
-      location_lat: number | null;
-      location_lng: number | null;
-      job_type_preferences: string[];
-    }>("/workers/me/profile")
-      .then((p) => {
-        setFullName(p.full_name || "");
-        setCompleteness(p.profile_completeness_pct);
-        setJobTypePrefs((p.job_type_preferences || []).filter(isAllowedJobType));
-        if (p.location_lat != null && p.location_lng != null) {
-          setMapLat(p.location_lat);
-          setMapLng(p.location_lng);
-        }
+    let cancelled = false;
+    api<WorkerReputation>("/workers/me/reputation")
+      .then((r) => {
+        if (!cancelled) setData(r);
       })
-      .catch(() => {});
-    api<{ id: number; doc_type: string }[]>("/workers/me/documents").then(setDocs).catch(() => {});
+      .catch((e) => {
+        if (!cancelled) setErr(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  async function savePartial() {
-    setMsg(null);
-    try {
-      await api("/workers/me/profile", {
-        method: "PUT",
-        json: {
-          full_name: fullName,
-          languages: langs
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean),
-          job_type_preferences: jobTypePrefs,
-          skills: skills
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean),
-          certifications: [],
-          availability: { always: true },
-          location_lat: mapLat,
-          location_lng: mapLng,
-        },
-      });
-      const p = await api<{ profile_completeness_pct: number }>("/workers/me/profile");
-      setCompleteness(p.profile_completeness_pct);
-      if (pdpa) await api("/workers/me/pdpa-consent", { method: "POST" });
-      setMsg(`${t("wizard_save")} ✓`);
-    } catch (e) {
-      setMsg(String(e));
+  if (err) return <p className="text-sm text-error">{err}</p>;
+  if (!data) return <p className="text-on-surface-variant">{t("settings_loading")}</p>;
+
+  return (
+    <div className="space-y-6">
+      <div className="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-6 shadow-sm">
+        <dl className="flex flex-wrap gap-6">
+          <div>
+            <dt className="text-xs font-medium text-on-surface-variant">{t("worker_profile_rating_avg")}</dt>
+            <dd className="text-2xl font-bold text-on-surface">{data.rating_avg.toFixed(1)} / 5</dd>
+          </div>
+          <div>
+            <dt className="text-xs font-medium text-on-surface-variant">{t("worker_profile_tier")}</dt>
+            <dd className="text-lg font-semibold capitalize text-on-surface">{data.tier}</dd>
+          </div>
+        </dl>
+      </div>
+      <div className="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-6 shadow-sm">
+        <h2 className="mb-4 text-sm font-semibold text-on-surface">{t("worker_profile_recent_ratings")}</h2>
+        {data.ratings.length === 0 ? (
+          <p className="text-sm text-on-surface-variant">{t("worker_profile_no_ratings")}</p>
+        ) : (
+          <ul className="space-y-4">
+            {data.ratings.map((r, i) => (
+              <li key={`${r.created_at}-${i}`} className="border-b border-outline-variant/10 pb-4 last:border-0 last:pb-0">
+                <p className="font-medium text-on-surface">
+                  {"★".repeat(r.stars)}
+                  {"☆".repeat(5 - r.stars)}
+                </p>
+                <p className="text-sm text-on-surface-variant">
+                  {r.client_org_name ?? "—"}
+                  {r.job_title ? ` · ${r.job_title}` : ""}
+                  {r.shift_starts_at ? ` · ${fmtDate(r.shift_starts_at)}` : ""}
+                </p>
+                <p className="text-xs text-on-surface-variant">{fmtDate(r.created_at)}</p>
+                {r.comment ? <p className="mt-1 text-sm text-on-surface">{r.comment}</p> : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div className="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-6 shadow-sm">
+        <h2 className="mb-4 text-sm font-semibold text-on-surface">{t("worker_profile_preferred_by")}</h2>
+        {data.preferred_by_clients.length === 0 ? (
+          <p className="text-sm text-on-surface-variant">{t("worker_profile_no_preferred")}</p>
+        ) : (
+          <ul className="list-inside list-disc space-y-1 text-sm text-on-surface">
+            {data.preferred_by_clients.map((c) => (
+              <li key={c.client_org_id}>{c.name}</li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WorkerProfilePage() {
+  const { t } = useTranslation();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = searchParams.get("tab") === "reputation" ? "reputation" : "account";
+
+  function goTab(next: "account" | "reputation") {
+    if (next === "account") {
+      setSearchParams({}, { replace: true });
+    } else {
+      setSearchParams({ tab: "reputation" }, { replace: true });
     }
   }
-
-  const inputClass =
-    "w-full rounded-xl border border-outline-variant/30 bg-surface-container-low px-4 py-3 text-on-surface placeholder:text-on-surface-variant focus:ring-2 focus:ring-primary";
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-10 md:px-8">
       <PageHeader
         eyebrow="Account"
         title={t("profile")}
-        description={t("step_x_of_y", { current: step, total: TOTAL_STEPS })}
+        description={tab === "reputation" ? t("worker_profile_reputation_intro") : undefined}
       />
-      <div className="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-8 shadow-sm">
-        {completeness !== null && (
-          <div className="mb-6 h-2 overflow-hidden rounded-full bg-surface-container-high">
-            <div className="h-full bg-primary transition-all" style={{ width: `${completeness}%` }} />
-          </div>
-        )}
-
-        {step === 1 && (
-          <div className="space-y-2">
-            <label className="text-sm text-on-surface-variant">{t("wizard_name")}</label>
-            <input className={`${inputClass} text-lg`} value={fullName} onChange={(e) => setFullName(e.target.value)} />
-          </div>
-        )}
-        {step === 2 && (
-          <div className="space-y-2">
-            <label className="text-sm text-on-surface-variant">{t("wizard_languages")}</label>
-            <input className={inputClass} value={langs} onChange={(e) => setLangs(e.target.value)} />
-          </div>
-        )}
-        {step === 3 && (
-          <div className="space-y-2">
-            <label className="text-sm text-on-surface-variant">{t("wizard_job_types")}</label>
-            <JobTypeMultiPicker
-              t={t}
-              selected={jobTypePrefs}
-              onChange={setJobTypePrefs}
-              selectClassName={`${inputClass} flex-1 min-w-0`}
-              addButtonClassName="rounded-xl border border-outline-variant/30 bg-surface-container-high px-4 py-3 font-medium text-on-surface shrink-0"
-              chipButtonClassName="text-xs bg-surface-container-high px-2 py-1 rounded-lg text-on-surface"
-            />
-          </div>
-        )}
-        {step === 4 && (
-          <div className="space-y-2">
-            <label className="text-sm text-on-surface-variant">{t("wizard_skills")}</label>
-            <input className={inputClass} value={skills} onChange={(e) => setSkills(e.target.value)} />
-          </div>
-        )}
-        {step === 5 && (
-          <div className="space-y-2">
-            <label className="text-sm text-on-surface-variant">{t("wizard_location")}</label>
-            <LocationMapPicker
-              latitude={mapLat}
-              longitude={mapLng}
-              onChange={({ lat, lng }) => {
-                setMapLat(lat);
-                setMapLng(lng);
-              }}
-              lightMode
-              height="260px"
-              showGeolocationButton={false}
-            />
-          </div>
-        )}
-        {step === 6 && (
-          <div className="space-y-3">
-            <label className="flex items-center gap-2 text-sm text-on-surface">
-              <input type="checkbox" checked={pdpa} onChange={(e) => setPdpa(e.target.checked)} className="rounded border-outline-variant" />
-              {t("wizard_pdpa")}
-            </label>
-            <p className="text-xs text-on-surface-variant">
-              Documents: upload via API `/workers/me/documents` or future UI. Listed: {docs.length}
-            </p>
-          </div>
-        )}
-
-        <div className="mt-8 flex flex-wrap gap-2">
-          {step > 1 && (
-            <button type="button" className="rounded-xl bg-surface-container-high px-4 py-2 font-medium text-on-surface" onClick={() => setStep((s) => s - 1)}>
-              {t("wizard_back")}
-            </button>
-          )}
-          {step < TOTAL_STEPS && (
-            <button type="button" className="rounded-xl bg-primary px-4 py-2 font-medium text-on-primary" onClick={() => setStep((s) => s + 1)}>
-              {t("wizard_next")}
-            </button>
-          )}
-          <button type="button" className="rounded-xl bg-secondary-container px-4 py-2 font-medium text-on-secondary-container" onClick={savePartial}>
-            {t("wizard_save")}
-          </button>
-        </div>
-        {msg && <p className="mt-4 text-sm text-primary">{msg}</p>}
+      <div className="mb-8 flex flex-wrap items-center gap-1 overflow-x-auto rounded-2xl bg-surface-container p-1">
+        <button
+          type="button"
+          onClick={() => goTab("account")}
+          className={[
+            "rounded-xl px-6 py-2.5 text-sm font-bold whitespace-nowrap transition-colors",
+            tab === "account" ? "bg-surface-container-lowest text-primary shadow-sm" : "font-medium text-on-surface-variant hover:text-on-surface",
+          ].join(" ")}
+        >
+          {t("worker_profile_tab_account")}
+        </button>
+        <button
+          type="button"
+          onClick={() => goTab("reputation")}
+          className={[
+            "rounded-xl px-6 py-2.5 text-sm font-bold whitespace-nowrap transition-colors",
+            tab === "reputation" ? "bg-surface-container-lowest text-primary shadow-sm" : "font-medium text-on-surface-variant hover:text-on-surface",
+          ].join(" ")}
+        >
+          {t("worker_profile_tab_reputation")}
+        </button>
       </div>
+      {tab === "account" ? <ProfileAccountTab /> : <ReputationTab />}
     </div>
   );
 }
 
 export default function WorkerApp() {
   return (
-    <WorkerPortalLayout>
-      <Routes>
+    <Routes>
+      <Route path="onboarding" element={<WorkerOnboardingPage />} />
+      <Route
+        element={
+          <WorkerPortalLayout>
+            <Outlet />
+          </WorkerPortalLayout>
+        }
+      >
         <Route index element={<OffersHome />} />
-        <Route path="onboarding" element={<WorkerOnboardingPage />} />
         <Route path="marketplace" element={<MarketplacePage />} />
         <Route path="marketplace/:shiftId" element={<MarketplaceShiftDetailPage />} />
         <Route path="history" element={<HistoryPage />} />
         <Route path="shifts" element={<ShiftsPage />} />
-        <Route path="profile" element={<ProfilePage />} />
-        <Route path="settings" element={<SettingsPage />} />
+        <Route path="profile" element={<WorkerProfilePage />} />
+        <Route path="settings" element={<Navigate to="/worker/profile?tab=account" replace />} />
         <Route path="earnings" element={<EarningsPage />} />
         <Route path="clock" element={<ClockPage />} />
-      </Routes>
-    </WorkerPortalLayout>
+      </Route>
+    </Routes>
   );
 }

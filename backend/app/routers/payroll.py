@@ -12,8 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.deps import require_roles
 from app.config import get_settings
 from app.db.session import get_db
-from app.models import PaymentRecord, PaymentStatus, TimesheetEntry, TimesheetStatus, User, UserRole, WorkerProfile
+from app.models import JobOrder, PaymentRecord, PaymentStatus, TimesheetEntry, TimesheetStatus, User, UserRole, WorkerProfile
 from app.services.audit import log_audit
+from app.services.ta_client_contracts import list_contracted_org_ids_for_ta
 from app.services.crypto_pii import decrypt_value
 from app.services.notifications import notify_user
 
@@ -25,9 +26,17 @@ async def generate_payment_file(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(require_roles(UserRole.ta, UserRole.admin))],
 ):
-    r = await db.execute(
-        select(TimesheetEntry).where(TimesheetEntry.status == TimesheetStatus.ta_verified)
+    stmt = (
+        select(TimesheetEntry)
+        .join(JobOrder, TimesheetEntry.job_order_id == JobOrder.id)
+        .where(TimesheetEntry.status == TimesheetStatus.ta_verified)
     )
+    if user.role == UserRole.ta:
+        org_ids = list(await list_contracted_org_ids_for_ta(db, user.id))
+        if not org_ids:
+            raise HTTPException(400, detail="No verified timesheets")
+        stmt = stmt.where(JobOrder.client_org_id.in_(org_ids))
+    r = await db.execute(stmt)
     entries = r.scalars().all()
     if not entries:
         raise HTTPException(400, detail="No verified timesheets")
@@ -40,7 +49,7 @@ async def generate_payment_file(
     os.makedirs(settings.upload_dir, exist_ok=True)
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["worker_name", "bank_account", "amount_sgd", "timesheet_ids"])
+    w.writerow(["worker_name", "bank_account", "bank_name", "amount_sgd", "timesheet_ids"])
     file_rows = []
     for wid, ents in by_worker.items():
         wp = await db.get(WorkerProfile, wid)
@@ -48,8 +57,9 @@ async def generate_payment_file(
             continue
         total = sum(e.gross_pay for e in ents)
         bank = decrypt_value(wp.bank_encrypted) if wp.bank_encrypted else ""
+        bank_name = (wp.bank_name or "").strip()
         ids = ",".join(str(e.id) for e in ents)
-        w.writerow([wp.full_name, bank, f"{total:.2f}", ids])
+        w.writerow([wp.full_name, bank, bank_name, f"{total:.2f}", ids])
         file_rows.append((wid, [e.id for e in ents], total))
         for e in ents:
             e.status = TimesheetStatus.payment_released

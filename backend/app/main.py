@@ -2,6 +2,7 @@ import asyncio
 import logging
 import mimetypes
 import os
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -23,11 +24,32 @@ from app.routers import (
     job_orders,
     notifications,
     payroll,
+    ta_contracts,
+    ta_portal,
     timesheets,
     worker_app,
     workers,
 )
 from app.services.shift_reminders import reminder_loop
+
+
+def _configure_logging() -> None:
+    """Ensure app + uvicorn logs appear on stderr (INFO by default)."""
+    level_name = (os.environ.get("LOG_LEVEL") or "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    root = logging.getLogger()
+    root.setLevel(level)
+    if not root.handlers:
+        h = logging.StreamHandler(sys.stderr)
+        h.setLevel(level)
+        h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s", datefmt="%H:%M:%S"))
+        root.addHandler(h)
+    logging.captureWarnings(True)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+_configure_logging()
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -41,6 +63,13 @@ mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    s = get_settings()
+    logger.info(
+        "OTP_DEV_MODE=%s (email OTP uses Resend when False); RESEND_API_KEY set=%s; RESEND_FROM_EMAIL/EMAIL_FROM set=%s",
+        s.otp_dev_mode,
+        bool((s.resend_api_key or "").strip()),
+        bool((s.resend_from_email or s.email_from or "").strip()),
+    )
     stop = asyncio.Event()
     reminder_task = asyncio.create_task(reminder_loop(stop))
     yield
@@ -69,6 +98,7 @@ app.mount("/static-uploads", StaticFiles(directory=settings.upload_dir), name="s
 app.include_router(auth.router)
 app.include_router(workers.router)
 app.include_router(client_orgs.router)
+app.include_router(ta_contracts.router)
 app.include_router(job_orders.router)
 app.include_router(worker_app.router)
 app.include_router(attendance.router)
@@ -78,6 +108,7 @@ app.include_router(exports.router)
 app.include_router(analytics.router)
 app.include_router(notifications.router)
 app.include_router(client_portal.router)
+app.include_router(ta_portal.router)
 app.include_router(admin.router)
 
 

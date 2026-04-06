@@ -2,8 +2,8 @@ from datetime import datetime, timezone
 
 from app.services.attendance_rules import (
     clock_in_earliest_utc,
-    clock_in_is_late,
-    clock_in_time_is_late,
+    is_grace_period_late_punch,
+    is_past_clock_in_grace_deadline,
     is_clock_in_too_early,
     is_late_window_without_clock_in,
     is_past_shift_end,
@@ -43,15 +43,17 @@ def test_late_threshold_ten_minutes_after_start():
     assert late_threshold_utc(start) == _utc(2026, 3, 25, 14, 10, 0)
 
 
-def test_clock_in_is_late_after_grace():
+def test_past_clock_in_grace_deadline_after_grace():
     start = _utc(2026, 3, 25, 14, 0, 0)
-    assert clock_in_is_late(_utc(2026, 3, 25, 14, 10, 1), start) is True
-    assert clock_in_is_late(_utc(2026, 3, 25, 14, 10, 0), start) is False
+    assert is_past_clock_in_grace_deadline(_utc(2026, 3, 25, 14, 10, 1), start) is True
+    assert is_past_clock_in_grace_deadline(_utc(2026, 3, 25, 14, 10, 0), start) is False
 
 
-def test_clock_in_time_is_late():
+def test_grace_period_late_punch():
     start = _utc(2026, 3, 25, 14, 0, 0)
-    assert clock_in_time_is_late(_utc(2026, 3, 25, 14, 11, 0), start) is True
+    assert is_grace_period_late_punch(_utc(2026, 3, 25, 14, 5, 0), start) is True
+    assert is_grace_period_late_punch(_utc(2026, 3, 25, 14, 10, 0), start) is True
+    assert is_grace_period_late_punch(_utc(2026, 3, 25, 14, 10, 1), start) is False
 
 
 def test_late_window_without_clock_in():

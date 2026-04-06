@@ -25,13 +25,22 @@ def is_past_shift_end(now: datetime, shift_ends_at: datetime) -> bool:
     return now >= end
 
 
-def clock_in_is_late(now: datetime, shift_starts_at: datetime) -> bool:
+def is_past_clock_in_grace_deadline(now: datetime, shift_starts_at: datetime) -> bool:
     return now > late_threshold_utc(shift_starts_at)
 
 
-def clock_in_time_is_late(clock_in_time: datetime, shift_starts_at: datetime) -> bool:
+def is_grace_period_late_punch(clock_in_time: datetime, shift_starts_at: datetime) -> bool:
     t = clock_in_time if clock_in_time.tzinfo else clock_in_time.replace(tzinfo=timezone.utc)
-    return t > late_threshold_utc(shift_starts_at)
+    start = shift_starts_at if shift_starts_at.tzinfo else shift_starts_at.replace(tzinfo=timezone.utc)
+    return start < t <= late_threshold_utc(shift_starts_at)
+
+
+def clock_in_is_late(now: datetime, shift_starts_at: datetime) -> bool:
+    return is_past_clock_in_grace_deadline(now, shift_starts_at)
+
+
+def clock_in_time_is_late(clock_in_time: datetime, shift_starts_at: datetime) -> bool:
+    return is_past_clock_in_grace_deadline(clock_in_time, shift_starts_at)
 
 
 def is_late_window_without_clock_in(now: datetime, shift_starts_at: datetime, has_clock_in: bool) -> bool:

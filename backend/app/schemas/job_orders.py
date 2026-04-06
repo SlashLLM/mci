@@ -4,6 +4,7 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.constants.job_types import ALLOWED_JOB_TYPES
+from app.constants.skills import canonicalize_skill
 
 
 class ShiftBlock(BaseModel):
@@ -36,7 +37,6 @@ class JobOrderCreate(BaseModel):
     uniform_notes: Optional[str] = None
     special_instructions: Optional[str] = None
     geofence_radius_m: int = 200
-    dispatch_mode: str = "fcfs"
     acceptance_window_minutes: int = 120
     shifts: list[ShiftBlock] = Field(default_factory=list)
 
@@ -47,6 +47,18 @@ class JobOrderCreate(BaseModel):
         if s not in ALLOWED_JOB_TYPES:
             raise ValueError("job_type must be one of the allowed catalogue values")
         return s
+
+    @field_validator("required_skills")
+    @classmethod
+    def required_skills_must_be_catalogue(cls, v: list[str]) -> list[str]:
+        out: list[str] = []
+        for item in v:
+            canonical = canonicalize_skill(item)
+            if not canonical:
+                raise ValueError(f"Invalid required skill: {item!r}")
+            if canonical not in out:
+                out.append(canonical)
+        return out
 
 
 class JobOrderOut(BaseModel):
@@ -62,7 +74,6 @@ class JobOrderOut(BaseModel):
     location_lng: float
     workers_required_total: int
     pay_model: str
-    dispatch_mode: str
     geofence_radius_m: int
     filled_slots: int = 0
     total_slots: int = 0
@@ -79,6 +90,14 @@ class JobAssignmentWorkerOut(BaseModel):
     worker_name: str
     assignment_status: str
     match_score: Optional[float] = None
+    applied_at: Optional[datetime] = None
+    rating_avg: float = 0.0
+    certifications_count: int = 0
+    worker_skills: list[str] = []
+    worker_certifications: list[str] = []
+    location_lat: Optional[float] = None
+    location_lng: Optional[float] = None
+    is_preferred: bool = False
 
 
 class JobDeclinedWorkerOut(BaseModel):
@@ -118,3 +137,5 @@ class JobOrderDetail(JobOrderOut):
     accepted_workers: list[JobAssignmentWorkerOut] = Field(default_factory=list)
     declined_workers: list[JobDeclinedWorkerOut] = Field(default_factory=list)
     rejected_workers: list[JobRejectedWorkerOut] = Field(default_factory=list)
+    has_ta_payroll: bool = False
+    viewer_can_vet_assignments: bool = True

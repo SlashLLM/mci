@@ -1,50 +1,34 @@
 import { useTranslation } from "react-i18next";
-import { useNavigate } from "react-router-dom";
-import WorkerMobileShell from "../../components/worker/WorkerMobileShell";
+import { Link, useNavigate } from "react-router-dom";
+import AuthShell from "../../components/portal/AuthShell";
+
+function MatIcon({ name, className = "" }: { name: string; className?: string }) {
+  return <span className={`material-symbols-outlined ${className}`.trim()} aria-hidden>{name}</span>;
+}
 
 export default function WorkerWelcomePage() {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const nav = useNavigate();
 
   return (
-    <WorkerMobileShell>
-      <div className="flex flex-col flex-1 p-6 pt-10">
-        <div className="flex justify-end gap-2 mb-6">
-          <button
-            type="button"
-            className={`text-xs px-3 py-1 rounded-lg ${i18n.language.startsWith("zh") ? "bg-slate-800" : "bg-sky-600/30 text-sky-300"}`}
-            onClick={() => {
-              i18n.changeLanguage("en");
-              localStorage.setItem("locale", "en");
-            }}
-          >
-            English
-          </button>
-          <button
-            type="button"
-            className={`text-xs px-3 py-1 rounded-lg ${i18n.language.startsWith("zh") ? "bg-sky-600/30 text-sky-300" : "bg-slate-800"}`}
-            onClick={() => {
-              i18n.changeLanguage("zh");
-              localStorage.setItem("locale", "zh");
-            }}
-          >
-            简体中文
-          </button>
-        </div>
-        <h1 className="text-2xl font-bold text-white leading-tight">{t("worker_welcome_title")}</h1>
-        <p className="text-slate-400 mt-3 text-sm leading-relaxed">{t("worker_welcome_body")}</p>
-        <div className="flex-1" />
+    <AuthShell eyebrow={t("worker_welcome_eyebrow")} title={t("worker_welcome_title")} description={t("worker_welcome_body")}>
+      <div className="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-6 shadow-sm md:p-8 space-y-4">
         <button
           type="button"
-          className="w-full bg-gradient-to-r from-sky-600 to-blue-600 text-slate-950 font-semibold py-4 rounded-xl mt-8"
-          onClick={() => nav("/login")}
+          className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-6 py-4 text-sm font-bold text-on-primary shadow-sm transition-colors hover:bg-primary-dim"
+          onClick={() => nav("/worker/signup")}
         >
+          <MatIcon name="person_add" className="text-xl" />
           {t("worker_welcome_cta")}
         </button>
-        <button type="button" className="text-center text-sm text-slate-500 underline mt-4" onClick={() => nav("/login")}>
+        <Link
+          to="/login"
+          className="flex w-full items-center justify-center gap-2 rounded-xl border border-outline-variant/30 py-3 text-sm font-semibold text-primary hover:bg-surface-container-low"
+        >
+          <MatIcon name="login" className="text-lg" />
           {t("worker_welcome_have_account")}
-        </button>
+        </Link>
       </div>
-    </WorkerMobileShell>
+    </AuthShell>
   );
 }

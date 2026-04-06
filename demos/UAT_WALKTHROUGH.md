@@ -18,6 +18,8 @@ Wait until migrations + seed finish in the `api` logs, then open:
 Demo OTP is enabled in compose (`OTP_DEV_MODE=true`, code `123456`).  
 To skip re-seeding on restart: `RUN_SEED=false docker compose up`
 
+The seed does **not** create an active TA–client contract: TAs start with no client engagements until the client requests a TA (or the TA enrolls an org) and the TA accepts.
+
 ### Hybrid dev (DB in Docker, code on host)
 
 ```bash
@@ -37,11 +39,13 @@ Then run backend + frontend locally as in the main README.
 
 ## Happy path
 
-1. **TA** (`+6590000002`): Job Orders → **Publish** “Demo packing shift”.
-2. **Worker** (`+6590000001`): My offers → **Accept** (creates confirmed assignment when slots available).
-3. **Worker**: After shift window (or adjust DB times for demo): Clock-in / Clock-out via API or future UI (use Swagger `POST /attendance/assignments/{id}/clock-in|clock-out` with photo + lat/lng near job site).
-4. **Client** (`+6590000003`): Timesheets → **Endorse** pending rows.
-5. **TA**: Timesheets → **TA verify** → **Payroll** → Generate payment CSV → **Exports** → download ZOHO CSVs.
+1. **Client** (`+6590000003`): Talent agent → pick a TA from the directory → **Send request**.
+2. **TA** (`+6590000002`): Clients → **Accept** the incoming request (establishes the active contract).
+3. **TA**: Job Orders → **Publish** “Demo packing shift”.
+4. **Worker** (`+6590000001`): My offers → **Accept** (creates confirmed assignment when slots available).
+5. **Worker**: After shift window (or adjust DB times for demo): Clock-in / Clock-out via API or future UI (use Swagger `POST /attendance/assignments/{id}/clock-in|clock-out` with photo + lat/lng near job site).
+6. **Client** (`+6590000003`): Timesheets → **Endorse** pending rows.
+7. **TA**: Timesheets → **TA verify** → **Payroll** → Generate payment CSV → **Exports** → download ZOHO CSVs.
 
 ## Notes
 

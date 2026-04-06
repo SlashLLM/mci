@@ -61,3 +61,4 @@ def test_timesheet_status_progression():
         TimesheetStatus.payment_released,
     ]
     assert [s.value for s in order] == ["pending", "employer_endorsed", "ta_verified", "payment_released"]
+    assert TimesheetStatus.client_payroll_released.value == "client_payroll_released"

@@ -1,7 +1,22 @@
 from functools import lru_cache
-from typing import List
+from typing import Any, List
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _env_bool(v: Any, *, default: bool) -> bool:
+    """Parse bool from env strings (.env often uses false, "false", quoted values)."""
+    if isinstance(v, bool):
+        return v
+    if v is None or v == "":
+        return default
+    s = str(v).strip().strip('"').strip("'").lower()
+    if s in ("0", "false", "no", "off", "n", "disabled"):
+        return False
+    if s in ("1", "true", "yes", "on", "y", "enabled"):
+        return True
+    return default
 
 
 class Settings(BaseSettings):
@@ -21,6 +36,31 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60 * 24 * 7
 
     max_upload_bytes: int = 15 * 1024 * 1024  # override via MAX_UPLOAD_BYTES
+
+    support_email: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    email_from: str = ""
+
+    resend_api_key: str = ""
+    resend_from_email: str = ""
+
+    @field_validator("otp_dev_mode", mode="before")
+    @classmethod
+    def coerce_otp_dev_mode(cls, v: Any) -> bool:
+        return _env_bool(v, default=True)
+
+    @field_validator("resend_api_key", "resend_from_email", "email_from", mode="before")
+    @classmethod
+    def strip_quotes_whitespace(cls, v: Any) -> str:
+        if v is None:
+            return ""
+        s = str(v).strip()
+        if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
+            s = s[1:-1].strip()
+        return s
 
     @property
     def cors_origin_list(self) -> List[str]:

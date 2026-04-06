@@ -3,7 +3,7 @@
 import csv
 import io
 from io import BytesIO
-from typing import Iterable
+from typing import Iterable, Optional, Sequence
 
 from openpyxl import Workbook
 from sqlalchemy import select
@@ -49,9 +49,22 @@ async def export_job_orders_csv(db: AsyncSession, jobs: Iterable[JobOrder]) -> s
     return buf.getvalue()
 
 
-async def export_timesheets_csv(db: AsyncSession) -> str:
-    r = await db.execute(select(TimesheetEntry))
-    rows = r.scalars().all()
+async def export_timesheets_csv(
+    db: AsyncSession, client_org_ids: Optional[Sequence[int]] = None
+) -> str:
+    if client_org_ids is not None and len(list(client_org_ids)) == 0:
+        rows = []
+    elif client_org_ids is not None:
+        stmt = (
+            select(TimesheetEntry)
+            .join(JobOrder, TimesheetEntry.job_order_id == JobOrder.id)
+            .where(JobOrder.client_org_id.in_(list(client_org_ids)))
+        )
+        r = await db.execute(stmt)
+        rows = r.scalars().all()
+    else:
+        r = await db.execute(select(TimesheetEntry))
+        rows = r.scalars().all()
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(
@@ -87,9 +100,22 @@ async def export_timesheets_csv(db: AsyncSession) -> str:
     return buf.getvalue()
 
 
-async def export_shifts_schedule_csv(db: AsyncSession) -> str:
-    r = await db.execute(select(Shift))
-    shifts = r.scalars().all()
+async def export_shifts_schedule_csv(
+    db: AsyncSession, client_org_ids: Optional[Sequence[int]] = None
+) -> str:
+    if client_org_ids is not None and len(list(client_org_ids)) == 0:
+        shifts = []
+    elif client_org_ids is not None:
+        stmt = (
+            select(Shift)
+            .join(JobOrder, Shift.job_order_id == JobOrder.id)
+            .where(JobOrder.client_org_id.in_(list(client_org_ids)))
+        )
+        r = await db.execute(stmt)
+        shifts = r.scalars().all()
+    else:
+        r = await db.execute(select(Shift))
+        shifts = r.scalars().all()
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["Shift_Id", "Job_Order_Id", "Starts_At", "Ends_At", "Workers_Required"])
@@ -137,9 +163,22 @@ def export_job_orders_xlsx_bytes(jobs: Iterable[JobOrder]) -> bytes:
     return buf.getvalue()
 
 
-async def export_timesheets_xlsx_bytes(db: AsyncSession) -> bytes:
-    r = await db.execute(select(TimesheetEntry))
-    rows = r.scalars().all()
+async def export_timesheets_xlsx_bytes(
+    db: AsyncSession, client_org_ids: Optional[Sequence[int]] = None
+) -> bytes:
+    if client_org_ids is not None and len(list(client_org_ids)) == 0:
+        rows = []
+    elif client_org_ids is not None:
+        stmt = (
+            select(TimesheetEntry)
+            .join(JobOrder, TimesheetEntry.job_order_id == JobOrder.id)
+            .where(JobOrder.client_org_id.in_(list(client_org_ids)))
+        )
+        r = await db.execute(stmt)
+        rows = r.scalars().all()
+    else:
+        r = await db.execute(select(TimesheetEntry))
+        rows = r.scalars().all()
     wb = Workbook()
     ws = wb.active
     ws.title = "Timesheets"

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { NavLink, useNavigate } from "react-router-dom";
-import { api } from "../../api";
+import { api, apiUrl, getToken } from "../../api";
 import { ClientPortalLayout } from "../../components/client/ClientPortalLayout";
+import { fmtShiftDate, formatTimesheetRate } from "../../utils/timesheetFormat";
 import { JobOrderForm } from "../../components/jobOrder/JobOrderForm";
 import { jobStatusLabelKey } from "../../components/jobOrder/jobOrderStatus";
 
@@ -167,10 +168,16 @@ type ClientTimesheetRow = {
   shift_id: number;
   status: string;
   gross_pay: number;
+  scheduled_hours?: number;
   actual_hours?: number;
+  overtime_hours?: number;
+  hourly_rate_snapshot?: number;
+  per_shift_rate_snapshot?: number | null;
+  pay_model?: string;
   worker_name?: string;
   shift_starts_at?: string | null;
   shift_ends_at?: string | null;
+  shift_date?: string | null;
   clock_in_at?: string | null;
   clock_out_at?: string | null;
 };
@@ -184,30 +191,116 @@ function fmtTsIso(iso: string | undefined | null): string {
   }
 }
 
+type ClientContractContext = {
+  has_ta_payroll: boolean;
+  active_ta_user_id: number | null;
+  active_ta_display_name?: string | null;
+  active_ta_username?: string | null;
+  active_contract_id: number | null;
+  pending_contracts: {
+    id: number;
+    ta_user_id: number;
+    status: string;
+    ta_display_name?: string | null;
+    ta_username?: string | null;
+  }[];
+};
+
+/** Human-readable TA label for clients (display name, then username, then id). */
+function formatClientTaName(
+  displayName: string | null | undefined,
+  username: string | null | undefined,
+  userId: number | null | undefined,
+): string {
+  const d = displayName?.trim();
+  if (d) return d;
+  const u = username?.trim();
+  if (u) return u;
+  if (userId != null) return `TA #${userId}`;
+  return "—";
+}
+
 export function ClientTimesheetsPage() {
   const { t } = useTranslation();
   const [jobs, setJobs] = useState<JobRow[]>([]);
   const [rows, setRows] = useState<ClientTimesheetRow[]>([]);
+  const [contractCtx, setContractCtx] = useState<ClientContractContext | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [endorseTarget, setEndorseTarget] = useState<ClientTimesheetRow | null>(null);
+  const [endorseStars, setEndorseStars] = useState(5);
+  const [endorsePrefer, setEndorsePrefer] = useState(true);
+  const [endorseErr, setEndorseErr] = useState<string | null>(null);
+  const [payrollErr, setPayrollErr] = useState<string | null>(null);
 
   async function reload() {
     setLoadErr(null);
     try {
-      const [j, ts] = await Promise.all([api<JobRow[]>("/job-orders"), api<ClientTimesheetRow[]>("/timesheets")]);
+      const [j, ts, ctx] = await Promise.all([
+        api<JobRow[]>("/job-orders"),
+        api<ClientTimesheetRow[]>("/timesheets"),
+        api<ClientContractContext>("/ta-contracts/client/context"),
+      ]);
       setJobs(j);
       setRows(ts);
+      setContractCtx(ctx);
     } catch (e) {
       setLoadErr(String(e));
     }
+  }
+
+  async function releaseClientPayroll(entryId: number) {
+    setPayrollErr(null);
+    try {
+      await api(`/timesheets/${entryId}/client-payroll-release`, { method: "POST" });
+      await reload();
+    } catch (e) {
+      setPayrollErr(String(e));
+    }
+  }
+
+  async function downloadClientPayrollCsv() {
+    setPayrollErr(null);
+    const token = getToken();
+    const res = await fetch(apiUrl("/exports/payroll/client-lines.csv"), {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      setPayrollErr(await res.text());
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "client_payroll_lines.csv";
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   useEffect(() => {
     void reload();
   }, []);
 
-  async function endorse(id: number) {
-    await api(`/timesheets/${id}/employer-endorse`, { method: "POST" });
-    await reload();
+  function openEndorse(x: ClientTimesheetRow) {
+    setEndorseErr(null);
+    setEndorseStars(5);
+    setEndorsePrefer(true);
+    setEndorseTarget(x);
+  }
+
+  async function submitEndorse() {
+    if (!endorseTarget) return;
+    setEndorseErr(null);
+    try {
+      await api(`/timesheets/${endorseTarget.id}/employer-endorse`, {
+        method: "POST",
+        json: { stars: endorseStars, prefer_worker: endorsePrefer },
+      });
+      setEndorseTarget(null);
+      await reload();
+    } catch (e) {
+      setEndorseErr(String(e));
+    }
   }
 
   const entriesByJobId = useMemo(() => {
@@ -222,8 +315,107 @@ export function ClientTimesheetsPage() {
 
   return (
     <div>
+      {endorseTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          role="presentation"
+          onClick={() => setEndorseTarget(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="endorse-dialog-title"
+            className="bg-surface-container-lowest border border-outline-variant/25 rounded-2xl shadow-xl max-w-md w-full p-6 text-on-surface"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.key === "Escape" && setEndorseTarget(null)}
+          >
+            <h2 id="endorse-dialog-title" className="font-headline text-lg font-bold mb-4">
+              {t("client_timesheet_endorse_modal_title")}
+            </h2>
+            <p className="text-sm text-on-surface-variant mb-2">{endorseTarget.worker_name || "—"}</p>
+            <div className="mb-4">
+              <p className="text-sm font-medium mb-2">{t("client_timesheet_endorse_rating")}</p>
+              <div className="flex gap-2 flex-wrap">
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    className={`h-10 w-10 rounded-lg font-semibold text-sm border transition-colors ${
+                      endorseStars === n
+                        ? "bg-primary text-on-primary border-primary"
+                        : "border-outline-variant/40 hover:bg-surface-container-high"
+                    }`}
+                    onClick={() => setEndorseStars(n)}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="mb-4">
+              <p className="text-sm font-medium mb-1">{t("client_timesheet_endorse_prefer")}</p>
+              <p className="text-xs text-on-surface-variant mb-2">{t("client_timesheet_endorse_prefer_hint")}</p>
+              <div className="flex gap-3">
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="radio"
+                    name="prefer"
+                    checked={endorsePrefer}
+                    onChange={() => setEndorsePrefer(true)}
+                  />
+                  {t("client_timesheet_endorse_prefer_yes")}
+                </label>
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="radio"
+                    name="prefer"
+                    checked={!endorsePrefer}
+                    onChange={() => setEndorsePrefer(false)}
+                  />
+                  {t("client_timesheet_endorse_prefer_no")}
+                </label>
+              </div>
+            </div>
+            {endorseErr && <p className="text-sm text-error mb-3">{endorseErr}</p>}
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                className="px-4 py-2 rounded-xl text-sm font-medium border border-outline-variant/30"
+                onClick={() => setEndorseTarget(null)}
+              >
+                {t("client_timesheet_endorse_cancel")}
+              </button>
+              <button
+                type="button"
+                className="px-4 py-2 rounded-xl text-sm font-semibold bg-primary text-on-primary"
+                onClick={() => void submitEndorse()}
+              >
+                {t("client_timesheet_endorse_submit")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <h1 className="font-headline text-3xl md:text-4xl font-extrabold text-on-surface tracking-tight mb-2">{t("timesheets")}</h1>
       <p className="text-on-surface-variant text-sm mb-8">{t("client_timesheets_intro")}</p>
+      {contractCtx?.has_ta_payroll && (
+        <p className="text-sm text-on-surface-variant mb-4 rounded-xl border border-outline-variant/25 bg-surface-container-low px-4 py-3">
+          {t("client_timesheets_ta_payroll_notice")}
+        </p>
+      )}
+      {!contractCtx?.has_ta_payroll && (
+        <div className="flex flex-wrap items-center gap-3 mb-6">
+          <button
+            type="button"
+            className="px-4 py-2 rounded-xl text-sm font-semibold bg-primary text-on-primary"
+            onClick={() => void downloadClientPayrollCsv()}
+          >
+            {t("client_timesheets_download_payroll_csv")}
+          </button>
+          <span className="text-xs text-on-surface-variant max-w-xl">{t("client_timesheets_self_payroll_hint")}</span>
+        </div>
+      )}
+      {payrollErr && <p className="mb-4 text-sm text-error">{payrollErr}</p>}
       {loadErr && <p className="mb-4 text-sm text-error">{loadErr}</p>}
       {jobs.length === 0 && !loadErr && <p className="text-on-surface-variant text-sm">{t("client_live_no_jobs")}</p>}
       <ul className="space-y-6">
@@ -276,15 +468,19 @@ export function ClientTimesheetsPage() {
                         {fmtTsIso(shiftRows[0]?.shift_ends_at)}
                       </h3>
                       <div className="overflow-x-auto rounded-xl border border-outline-variant/20">
-                        <table className="w-full min-w-[720px] text-left text-sm">
+                        <table className="w-full min-w-[1040px] text-left text-sm">
                           <thead className="bg-surface-container-low text-xs uppercase text-on-surface-variant">
                             <tr>
-                              <th className="px-3 py-2 font-semibold">{t("client_timesheet_col_employee")}</th>
-                              <th className="px-3 py-2 font-semibold">{t("live_worker_clock_in")}</th>
-                              <th className="px-3 py-2 font-semibold">{t("live_worker_clock_out")}</th>
-                              <th className="px-3 py-2 font-semibold">{t("client_timesheet_col_hours")}</th>
-                              <th className="px-3 py-2 font-semibold">{t("client_timesheet_col_pay")}</th>
-                              <th className="px-3 py-2 font-semibold">{t("client_timesheet_col_status")}</th>
+                              <th className="px-3 py-2 font-semibold">{t("timesheet_col_worker")}</th>
+                              <th className="px-3 py-2 font-semibold">{t("timesheet_col_shift_date")}</th>
+                              <th className="px-3 py-2 font-semibold">{t("timesheet_col_scheduled")}</th>
+                              <th className="px-3 py-2 font-semibold">{t("timesheet_col_actual")}</th>
+                              <th className="px-3 py-2 font-semibold">{t("timesheet_col_overtime")}</th>
+                              <th className="px-3 py-2 font-semibold">{t("timesheet_col_rate")}</th>
+                              <th className="px-3 py-2 font-semibold">{t("timesheet_col_gross")}</th>
+                              <th className="px-3 py-2 font-semibold">{t("timesheet_col_clock_in")}</th>
+                              <th className="px-3 py-2 font-semibold">{t("timesheet_col_clock_out")}</th>
+                              <th className="px-3 py-2 font-semibold">{t("timesheet_col_status")}</th>
                               <th className="px-3 py-2 font-semibold" />
                             </tr>
                           </thead>
@@ -292,21 +488,50 @@ export function ClientTimesheetsPage() {
                             {shiftRows.map((x) => (
                               <tr key={x.id} className="border-t border-outline-variant/10">
                                 <td className="px-3 py-2 font-medium">{x.worker_name || "—"}</td>
+                                <td className="px-3 py-2 text-on-surface-variant">
+                                  {fmtShiftDate(x.shift_date || (x.shift_starts_at ? x.shift_starts_at.slice(0, 10) : null))}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {x.scheduled_hours != null ? x.scheduled_hours.toFixed(2) : "—"}
+                                </td>
+                                <td className="px-3 py-2">{x.actual_hours != null ? x.actual_hours.toFixed(2) : "—"}</td>
+                                <td className="px-3 py-2">
+                                  {x.overtime_hours != null && x.overtime_hours > 0 ? x.overtime_hours.toFixed(2) : "—"}
+                                </td>
+                                <td className="px-3 py-2 text-on-surface-variant">
+                                  {x.pay_model
+                                    ? formatTimesheetRate({
+                                        pay_model: x.pay_model,
+                                        hourly_rate_snapshot: x.hourly_rate_snapshot ?? 0,
+                                        per_shift_rate_snapshot: x.per_shift_rate_snapshot ?? null,
+                                      })
+                                    : "—"}
+                                </td>
+                                <td className="px-3 py-2 font-semibold">${x.gross_pay.toFixed(2)}</td>
                                 <td className="px-3 py-2 text-on-surface-variant">{fmtTsIso(x.clock_in_at)}</td>
                                 <td className="px-3 py-2 text-on-surface-variant">{fmtTsIso(x.clock_out_at)}</td>
-                                <td className="px-3 py-2">{x.actual_hours != null ? x.actual_hours.toFixed(2) : "—"}</td>
-                                <td className="px-3 py-2 font-semibold">${x.gross_pay.toFixed(2)}</td>
                                 <td className="px-3 py-2 text-on-surface-variant">{x.status}</td>
                                 <td className="px-3 py-2">
-                                  {x.status === "pending" && (
-                                    <button
-                                      type="button"
-                                      className="text-primary font-semibold hover:underline"
-                                      onClick={() => void endorse(x.id)}
-                                    >
-                                      {t("client_timesheet_endorse")}
-                                    </button>
-                                  )}
+                                  <div className="flex flex-col gap-1 items-start">
+                                    {x.status === "pending" && (
+                                      <button
+                                        type="button"
+                                        className="text-primary font-semibold hover:underline"
+                                        onClick={() => openEndorse(x)}
+                                      >
+                                        {t("client_timesheet_endorse")}
+                                      </button>
+                                    )}
+                                    {!contractCtx?.has_ta_payroll && x.status === "employer_endorsed" && (
+                                      <button
+                                        type="button"
+                                        className="text-primary font-semibold hover:underline"
+                                        onClick={() => void releaseClientPayroll(x.id)}
+                                      >
+                                        {t("client_timesheet_release_payroll")}
+                                      </button>
+                                    )}
+                                  </div>
                                 </td>
                               </tr>
                             ))}
@@ -337,6 +562,7 @@ type LiveWorkerRow = {
   attendance_status?: string | null;
   show_late_badge?: boolean;
   not_checked_in_late?: boolean;
+  show_absent_badge?: boolean;
 };
 
 type ShiftAttendanceBlock = {
@@ -369,14 +595,20 @@ type LiveBanner = {
 
 function LiveWorkerStatusCells({ w }: { w: LiveWorkerRow }) {
   const { t } = useTranslation();
+  const absent = Boolean(w.show_absent_badge || w.attendance_status === "absent");
   const notCheckedIn = Boolean(w.not_checked_in_late);
-  const arrivedLate = Boolean(w.clock_in && w.show_late_badge && !notCheckedIn);
+  const arrivedLate = Boolean(w.clock_in && w.show_late_badge && !notCheckedIn && !absent);
   const geofenceBad = w.geofence_ok === false;
   return (
     <div className="flex flex-wrap gap-1.5">
       {geofenceBad && (
         <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-900 dark:bg-amber-900/40 dark:text-amber-200">
           {t("live_badge_geofence")}
+        </span>
+      )}
+      {absent && (
+        <span className="rounded-full bg-rose-100 px-2.5 py-0.5 text-xs font-semibold text-rose-900 dark:bg-rose-900/40 dark:text-rose-200">
+          {t("live_badge_absent")}
         </span>
       )}
       {notCheckedIn && (
@@ -389,7 +621,7 @@ function LiveWorkerStatusCells({ w }: { w: LiveWorkerRow }) {
           {t("live_badge_late")}
         </span>
       )}
-      {!geofenceBad && !notCheckedIn && !arrivedLate && w.clock_in && (
+      {!geofenceBad && !absent && !notCheckedIn && !arrivedLate && w.clock_in && (
         <span className="text-xs text-on-surface-variant">OK</span>
       )}
     </div>
@@ -600,6 +832,133 @@ export function ClientLivePage() {
               </div>
             ))}
         </>
+      )}
+    </div>
+  );
+}
+
+type TalentAgentListItem = { id: number; username: string | null; display_name?: string | null };
+
+export function ClientTalentAgentPage() {
+  const { t } = useTranslation();
+  const [ctx, setCtx] = useState<ClientContractContext | null>(null);
+  const [agents, setAgents] = useState<TalentAgentListItem[]>([]);
+  const [selectedTaId, setSelectedTaId] = useState<number | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function reload() {
+    setErr(null);
+    try {
+      const [c, a] = await Promise.all([
+        api<ClientContractContext>("/ta-contracts/client/context"),
+        api<TalentAgentListItem[]>("/ta-contracts/directory/talent-agents"),
+      ]);
+      setCtx(c);
+      setAgents(a);
+    } catch (e) {
+      setErr(String(e));
+    }
+  }
+
+  useEffect(() => {
+    void reload();
+  }, []);
+
+  async function submitRequest() {
+    if (!selectedTaId) return;
+    setErr(null);
+    setMsg(null);
+    try {
+      await api("/ta-contracts/client/request", {
+        method: "POST",
+        json: { ta_user_id: selectedTaId, message: null },
+      });
+      setMsg(t("client_ta_request_sent"));
+      await reload();
+    } catch (e) {
+      setErr(String(e));
+    }
+  }
+
+  async function cancelPending(contractId: number) {
+    setErr(null);
+    try {
+      await api(`/ta-contracts/client/pending/${contractId}/cancel`, { method: "POST" });
+      await reload();
+    } catch (e) {
+      setErr(String(e));
+    }
+  }
+
+  return (
+    <div>
+      <h1 className="font-headline text-3xl md:text-4xl font-extrabold text-on-surface tracking-tight mb-2">
+        {t("client_ta_page_title")}
+      </h1>
+      <p className="text-on-surface-variant text-sm mb-8 max-w-2xl">{t("client_ta_page_intro")}</p>
+      {err && <p className="text-sm text-error mb-4">{err}</p>}
+      {msg && <p className="text-sm text-primary mb-4">{msg}</p>}
+      {ctx && (
+        <div className="rounded-2xl border border-outline-variant/25 bg-surface-container-lowest p-5 mb-8 text-sm text-on-surface">
+          <p className="font-semibold mb-2">{t("client_ta_status_heading")}</p>
+          {ctx.has_ta_payroll ? (
+            <p>
+              {t("client_ta_status_active", {
+                name: formatClientTaName(ctx.active_ta_display_name, ctx.active_ta_username, ctx.active_ta_user_id),
+                id: ctx.active_ta_user_id ?? "—",
+              })}
+            </p>
+          ) : (
+            <p>{t("client_ta_status_independent")}</p>
+          )}
+          {ctx.pending_contracts.length > 0 && (
+            <ul className="mt-3 space-y-2">
+              {ctx.pending_contracts.map((p) => (
+                <li key={p.id} className="flex flex-wrap items-center gap-2 text-on-surface-variant">
+                  <span>
+                    {t("client_ta_pending_row", {
+                      id: p.id,
+                      ta: formatClientTaName(p.ta_display_name, p.ta_username, p.ta_user_id),
+                    })}
+                  </span>
+                  <button
+                    type="button"
+                    className="text-xs font-semibold text-error underline"
+                    onClick={() => void cancelPending(p.id)}
+                  >
+                    {t("client_ta_cancel_request")}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+      {!ctx?.has_ta_payroll && (
+        <div className="rounded-2xl border border-outline-variant/25 bg-surface-container-lowest p-5 max-w-lg">
+          <label className="block text-sm font-medium mb-2">{t("client_ta_select_label")}</label>
+          <select
+            className="w-full rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm mb-4"
+            value={selectedTaId ?? ""}
+            onChange={(e) => setSelectedTaId(e.target.value ? Number(e.target.value) : null)}
+          >
+            <option value="">{t("client_ta_select_placeholder")}</option>
+            {agents.map((a) => (
+              <option key={a.id} value={a.id}>
+                {formatClientTaName(a.display_name, a.username, a.id)} (#{a.id})
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="glass-cta text-white px-5 py-2.5 rounded-xl text-sm font-bold"
+            disabled={!selectedTaId}
+            onClick={() => void submitRequest()}
+          >
+            {t("client_ta_request_button")}
+          </button>
+        </div>
       )}
     </div>
   );

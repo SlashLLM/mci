@@ -1,8 +1,10 @@
+from datetime import datetime
 from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
 from app.constants.job_types import ALLOWED_JOB_TYPES
+from app.constants.skills import canonicalize_skill
 
 
 class WorkerProfileIn(BaseModel):
@@ -28,6 +30,18 @@ class WorkerProfileIn(BaseModel):
             if item not in ALLOWED_JOB_TYPES:
                 raise ValueError(f"Invalid job type preference: {item!r}")
         return v
+
+    @field_validator("skills")
+    @classmethod
+    def skills_must_be_catalogue(cls, v: list[str]) -> list[str]:
+        out: list[str] = []
+        for item in v:
+            canonical = canonicalize_skill(item)
+            if not canonical:
+                raise ValueError(f"Invalid skill: {item!r}")
+            if canonical not in out:
+                out.append(canonical)
+        return out
 
 
 class WorkerProfileOut(BaseModel):
@@ -59,3 +73,36 @@ class WorkerProfileOut(BaseModel):
 
 class OnboardingCompleteIn(BaseModel):
     terms_accepted: bool = Field(..., description="Must be true to complete onboarding")
+
+
+class WorkerRatingItemOut(BaseModel):
+    stars: int
+    comment: Optional[str] = None
+    created_at: datetime
+    client_org_id: Optional[int] = None
+    client_org_name: Optional[str] = None
+    job_title: Optional[str] = None
+    shift_starts_at: Optional[datetime] = None
+
+
+class PreferredClientOut(BaseModel):
+    client_org_id: int
+    name: str
+
+
+class WorkerReputationOut(BaseModel):
+    rating_avg: float
+    tier: str
+    ratings: list[WorkerRatingItemOut]
+    preferred_by_clients: list[PreferredClientOut]
+
+
+class ProfileCompletenessItemOut(BaseModel):
+    id: str
+    done: bool
+    required_for_compliance: bool
+
+
+class ProfileCompletenessDetailOut(BaseModel):
+    profile_completeness_pct: int
+    items: list[ProfileCompletenessItemOut]

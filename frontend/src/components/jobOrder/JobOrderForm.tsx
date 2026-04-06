@@ -3,6 +3,8 @@ import type { TFunction } from "i18next";
 import { api } from "../../api";
 import { isAllowedJobType, JOB_TYPES } from "../../constants/jobTypes";
 import { DEFAULT_MAP_CENTER, LocationMapPicker } from "../maps/LocationMapPicker";
+import { CertificationMultiPicker } from "../certifications/CertificationMultiPicker";
+import { SkillMultiPicker } from "../skills/SkillMultiPicker";
 
 export type ShiftRow = {
   starts_local: string;
@@ -72,12 +74,9 @@ export function JobOrderForm({ t, mode, organizations = [], onSuccess, lightMode
   const [perShiftRate, setPerShiftRate] = useState("");
   const [skills, setSkills] = useState<string[]>([]);
   const [certs, setCerts] = useState<string[]>([]);
-  const [skillInput, setSkillInput] = useState("");
-  const [certInput, setCertInput] = useState("");
   const [uniform, setUniform] = useState("");
   const [special, setSpecial] = useState("");
   const [geofence, setGeofence] = useState("200");
-  const [dispatchMode, setDispatchMode] = useState("fcfs");
   const [acceptanceMins, setAcceptanceMins] = useState("120");
   const [shifts, setShifts] = useState<ShiftRow[]>([defaultShiftRow()]);
   const [rangeFrom, setRangeFrom] = useState("");
@@ -88,17 +87,6 @@ export function JobOrderForm({ t, mode, organizations = [], onSuccess, lightMode
   const jobTypeFieldBase = useId().replace(/:/g, "_");
   const jobTypeInputId = `mci-job-type-${jobTypeFieldBase}`;
   const jobTypeDatalistId = `mci-job-type-list-${jobTypeFieldBase}`;
-
-  function addChip(raw: string, list: string[], setList: (v: string[]) => void, clear: () => void) {
-    const v = raw.trim();
-    if (!v || list.includes(v)) return;
-    setList([...list, v]);
-    clear();
-  }
-
-  function removeChip(i: number, list: string[], setList: (v: string[]) => void) {
-    setList(list.filter((_, j) => j !== i));
-  }
 
   function addRangeShifts() {
     if (!rangeFrom || !rangeTo || shifts.length < 1) return;
@@ -168,7 +156,6 @@ export function JobOrderForm({ t, mode, organizations = [], onSuccess, lightMode
       uniform_notes: uniform.trim() || null,
       special_instructions: special.trim() || null,
       geofence_radius_m: Math.max(0, parseInt(geofence, 10) || 200),
-      dispatch_mode: dispatchMode,
       acceptance_window_minutes: Math.max(1, parseInt(acceptanceMins, 10) || 120),
       shifts: shifts.map((s) => ({
         starts_at: new Date(s.starts_local).toISOString(),
@@ -293,56 +280,26 @@ export function JobOrderForm({ t, mode, organizations = [], onSuccess, lightMode
 
       <div>
         <label className={labelClass}>{t("job_form_skills")}</label>
-        <div className="flex gap-2">
-          <input
-            className={inputClass}
-            value={skillInput}
-            onChange={(e) => setSkillInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                addChip(skillInput, skills, setSkills, () => setSkillInput(""));
-              }
-            }}
-          />
-          <button type="button" className={chipBtn} onClick={() => addChip(skillInput, skills, setSkills, () => setSkillInput(""))}>
-            {t("job_form_add")}
-          </button>
-        </div>
-        <div className="flex flex-wrap gap-1 mt-2">
-          {skills.map((s, i) => (
-            <button key={s} type="button" className={chipTag} onClick={() => removeChip(i, skills, setSkills)}>
-              {s} ×
-            </button>
-          ))}
-        </div>
+        <SkillMultiPicker
+          t={t}
+          selected={skills}
+          onChange={setSkills}
+          inputClassName={inputClass}
+          addButtonClassName={chipBtn}
+          chipButtonClassName={chipTag}
+        />
       </div>
 
       <div>
         <label className={labelClass}>{t("job_form_certs")}</label>
-        <div className="flex gap-2">
-          <input
-            className={inputClass}
-            value={certInput}
-            onChange={(e) => setCertInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                addChip(certInput, certs, setCerts, () => setCertInput(""));
-              }
-            }}
-          />
-          <button type="button" className={chipBtn} onClick={() => addChip(certInput, certs, setCerts, () => setCertInput(""))}>
-            {t("job_form_add")}
-          </button>
-        </div>
-        <div className="flex flex-wrap gap-1 mt-2">
-          {certs.map((s, i) => (
-            <button key={s} type="button" className={chipTag} onClick={() => removeChip(i, certs, setCerts)}>
-              {s} ×
-            </button>
-          ))}
-        </div>
+        <CertificationMultiPicker
+          t={t}
+          selected={certs}
+          onChange={setCerts}
+          inputClassName={inputClass}
+          addButtonClassName={chipBtn}
+          chipButtonClassName={chipTag}
+        />
       </div>
 
       <div>
@@ -447,14 +404,6 @@ export function JobOrderForm({ t, mode, organizations = [], onSuccess, lightMode
           <div>
             <label className={labelClass}>{t("job_form_geofence")}</label>
             <input className={inputClass} type="number" min={0} value={geofence} onChange={(e) => setGeofence(e.target.value)} />
-          </div>
-          <div>
-            <label className={labelClass}>{t("job_form_dispatch_mode")}</label>
-            <select className={inputClass} value={dispatchMode} onChange={(e) => setDispatchMode(e.target.value)}>
-              <option value="fcfs">fcfs</option>
-              <option value="performance">performance</option>
-              <option value="preferred">preferred</option>
-            </select>
           </div>
           <div>
             <label className={labelClass}>{t("job_form_acceptance_window")}</label>

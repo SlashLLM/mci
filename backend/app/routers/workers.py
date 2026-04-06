@@ -3,15 +3,36 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import require_roles
 from app.auth.file_tokens import create_file_access_token
 from app.config import get_settings
 from app.db.session import get_db
-from app.models import Document, User, UserRole, WorkerProfile, WorkerStatus
-from app.schemas.workers import OnboardingCompleteIn, WorkerProfileIn, WorkerProfileOut
+from app.models import (
+    ClientOrganization,
+    Document,
+    JobOrder,
+    PreferredWorker,
+    Rating,
+    Shift,
+    ShiftAssignment,
+    User,
+    UserRole,
+    WorkerProfile,
+    WorkerStatus,
+)
+from app.schemas.workers import (
+    OnboardingCompleteIn,
+    PreferredClientOut,
+    ProfileCompletenessDetailOut,
+    ProfileCompletenessItemOut,
+    WorkerProfileIn,
+    WorkerProfileOut,
+    WorkerRatingItemOut,
+    WorkerReputationOut,
+)
 from app.services.audit import log_audit
 from app.services.crypto_pii import encrypt_value, mask_nric
 
@@ -28,47 +49,97 @@ _ALLOWED_DOC_CT = frozenset(
 )
 
 
+def _completeness_flags(wp: WorkerProfile, user: User, doc_types: set[str]) -> dict[str, bool]:
+    avail = wp.availability if isinstance(wp.availability, dict) else {}
+    avail_filled = bool(avail) and any(bool(avail.get(k)) for k in ("morning", "evening", "weekend", "always"))
+    cert_doc = "certification" in doc_types or "certifications" in doc_types
+    train_doc = "training_record" in doc_types or "training" in doc_types
+    prof_proof = cert_doc or train_doc or bool(wp.certifications)
+    return {
+        "full_name": bool(wp.full_name and str(wp.full_name).strip()),
+        "nric": bool(wp.nric_encrypted or wp.nric_masked),
+        "phone": bool(user.phone and str(user.phone).strip()),
+        "email": bool(user.email and str(user.email).strip()),
+        "languages": bool(wp.languages),
+        "job_type_preferences": bool(wp.job_type_preferences),
+        "availability": avail_filled,
+        "skills": bool(wp.skills),
+        "bank_account": bool(wp.bank_encrypted),
+        "document_nric": "nric_copy" in doc_types or "nric" in doc_types,
+        "work_pass": "work_pass" in doc_types or bool(wp.work_pass_not_applicable),
+        "document_certification": cert_doc,
+        "document_training": train_doc,
+        "certifications_list": bool(wp.certifications),
+        "bank_name": bool(wp.bank_name and str(wp.bank_name).strip()),
+        "location": wp.location_lat is not None and wp.location_lng is not None,
+        "pdpa_consent": bool(wp.pdpa_consent_at),
+        "terms_accepted": bool(wp.terms_accepted_at),
+        "professional_proof": prof_proof,
+    }
+
+
 def _weighted_completeness(wp: WorkerProfile, user: User, doc_types: set[str]) -> int:
     """Weights: Basic 20%, Preferences 20%, Bank 15%, Documents 35%, Optional 10%."""
+    f = _completeness_flags(wp, user, doc_types)
     s = 0.0
-    if wp.full_name and str(wp.full_name).strip():
+    if f["full_name"]:
         s += 5
-    if wp.nric_encrypted or wp.nric_masked:
+    if f["nric"]:
         s += 5
-    if user.phone and str(user.phone).strip():
+    if f["phone"]:
         s += 5
-    if user.email and str(user.email).strip():
+    if f["email"]:
         s += 5
-
-    if wp.languages:
+    if f["languages"]:
         s += 5
-    if wp.job_type_preferences:
+    if f["job_type_preferences"]:
         s += 5
-    if wp.availability and isinstance(wp.availability, dict) and len(wp.availability) > 0:
+    if f["availability"]:
         s += 5
-    if wp.skills:
+    if f["skills"]:
         s += 5
-
-    if wp.bank_encrypted:
+    if f["bank_account"]:
         s += 15
-
-    if "nric_copy" in doc_types or "nric" in doc_types:
+    if f["document_nric"]:
         s += 10
-    if "work_pass" in doc_types or wp.work_pass_not_applicable:
+    if f["work_pass"]:
         s += 8
-    if "certification" in doc_types or "certifications" in doc_types:
+    if f["document_certification"]:
         s += 8.5
-    if "training_record" in doc_types or "training" in doc_types:
+    if f["document_training"]:
         s += 8.5
-
-    if wp.certifications:
+    if f["certifications_list"]:
         s += 4
-    if wp.bank_name and str(wp.bank_name).strip():
+    if f["bank_name"]:
         s += 2
-    if wp.location_lat is not None and wp.location_lng is not None:
+    if f["location"]:
         s += 4
-
     return int(min(100, round(s)))
+
+
+def _completeness_checklist(wp: WorkerProfile, user: User, doc_types: set[str]) -> list[ProfileCompletenessItemOut]:
+    f = _completeness_flags(wp, user, doc_types)
+    specs: list[tuple[str, bool, bool]] = [
+        ("full_name", f["full_name"], True),
+        ("nric_fin", f["nric"], True),
+        ("phone", f["phone"], True),
+        ("email", f["email"], True),
+        ("languages", f["languages"], True),
+        ("job_type_preferences", f["job_type_preferences"], True),
+        ("available_hours", f["availability"], True),
+        ("skills", f["skills"], True),
+        ("bank_account", f["bank_account"], True),
+        ("bank_name", f["bank_name"], False),
+        ("home_location", f["location"], False),
+        ("document_nric_copy", f["document_nric"], True),
+        ("work_pass_or_exempt", f["work_pass"], True),
+        ("certifications_or_training", f["professional_proof"], True),
+        ("pdpa_consent", f["pdpa_consent"], True),
+        ("terms_accepted", f["terms_accepted"], True),
+    ]
+    return [
+        ProfileCompletenessItemOut(id=i, done=d, required_for_compliance=r) for i, d, r in specs
+    ]
 
 
 async def _doc_types_for_worker(db: AsyncSession, worker_profile_id: int) -> set[str]:
@@ -88,7 +159,7 @@ def _profile_out(wp: WorkerProfile, user: User) -> WorkerProfileOut:
         id=wp.id,
         full_name=wp.full_name,
         nric_masked=wp.nric_masked,
-        phone=user.phone,
+        phone=user.phone or "",
         email=user.email,
         languages=wp.languages or [],
         job_type_preferences=wp.job_type_preferences or [],
@@ -109,6 +180,59 @@ def _profile_out(wp: WorkerProfile, user: User) -> WorkerProfileOut:
     )
 
 
+@router.get("/me/reputation", response_model=WorkerReputationOut)
+async def get_my_reputation(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.worker))],
+):
+    r = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
+    wp = r.scalar_one_or_none()
+    if not wp:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    stmt = (
+        select(Rating, User, ClientOrganization, JobOrder.title, Shift.starts_at)
+        .join(User, Rating.rated_by_user_id == User.id)
+        .outerjoin(ClientOrganization, User.client_org_id == ClientOrganization.id)
+        .outerjoin(ShiftAssignment, Rating.shift_assignment_id == ShiftAssignment.id)
+        .outerjoin(Shift, ShiftAssignment.shift_id == Shift.id)
+        .outerjoin(JobOrder, Shift.job_order_id == JobOrder.id)
+        .where(Rating.worker_id == wp.id)
+        .order_by(Rating.created_at.desc())
+        .limit(50)
+    )
+    r2 = await db.execute(stmt)
+    ratings_out: list[WorkerRatingItemOut] = []
+    for rating, _rater, co, job_title, shift_starts in r2.all():
+        ratings_out.append(
+            WorkerRatingItemOut(
+                stars=rating.stars,
+                comment=rating.comment,
+                created_at=rating.created_at,
+                client_org_id=co.id if co else None,
+                client_org_name=co.name if co else None,
+                job_title=job_title,
+                shift_starts_at=shift_starts,
+            )
+        )
+
+    stmt_pw = (
+        select(ClientOrganization)
+        .join(PreferredWorker, PreferredWorker.client_org_id == ClientOrganization.id)
+        .where(PreferredWorker.worker_id == wp.id)
+        .order_by(ClientOrganization.name)
+    )
+    r3 = await db.execute(stmt_pw)
+    pref_clients = [PreferredClientOut(client_org_id=o.id, name=o.name) for o in r3.scalars().all()]
+
+    return WorkerReputationOut(
+        rating_avg=float(wp.rating_avg or 0.0),
+        tier=wp.tier.value,
+        ratings=ratings_out,
+        preferred_by_clients=pref_clients,
+    )
+
+
 @router.get("/me/profile", response_model=WorkerProfileOut)
 async def get_my_profile(
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -120,6 +244,26 @@ async def get_my_profile(
         raise HTTPException(status_code=404, detail="Profile not found")
     await db.refresh(user)
     return _profile_out(wp, user)
+
+
+@router.get("/me/profile/completeness", response_model=ProfileCompletenessDetailOut)
+async def get_my_profile_completeness(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.worker))],
+):
+    r = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
+    wp = r.scalar_one_or_none()
+    if not wp:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    await db.refresh(user)
+    await _recalc_completeness(db, wp, user)
+    types = await _doc_types_for_worker(db, wp.id)
+    items = _completeness_checklist(wp, user, types)
+    await db.flush()
+    return ProfileCompletenessDetailOut(
+        profile_completeness_pct=wp.profile_completeness_pct,
+        items=items,
+    )
 
 
 @router.put("/me/profile", response_model=WorkerProfileOut)
@@ -145,7 +289,14 @@ async def update_my_profile(
     if body.bank_name is not None:
         wp.bank_name = body.bank_name
     if body.email is not None:
-        user.email = body.email.strip() or None
+        em = body.email.strip().lower() or None
+        if em:
+            clash = await db.execute(
+                select(User).where(func.lower(User.email) == em, User.id != user.id)
+            )
+            if clash.scalar_one_or_none():
+                raise HTTPException(status_code=409, detail="Email already in use")
+        user.email = em
     if body.phone is not None:
         pn = body.phone.strip().replace(" ", "")
         if pn and pn != user.phone:

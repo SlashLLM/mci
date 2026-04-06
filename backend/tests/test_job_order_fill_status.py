@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
-from app.models import DispatchMode, JobOrder, JobOrderStatus, PayModel
+from app.models import JobOrder, JobOrderStatus, PayModel
 from app.services.job_status import refresh_job_order_fill_status
 
 
@@ -19,7 +19,6 @@ def test_refresh_preserves_draft_when_unpublished():
         location_lng=103.82,
         workers_required_total=2,
         pay_model=PayModel.hourly,
-        dispatch_mode=DispatchMode.fcfs,
         status=JobOrderStatus.draft,
         published_at=None,
     )
@@ -41,7 +40,6 @@ def test_refresh_updates_fill_when_published():
         location_lng=103.82,
         workers_required_total=2,
         pay_model=PayModel.hourly,
-        dispatch_mode=DispatchMode.fcfs,
         status=JobOrderStatus.open,
         published_at=datetime.now(timezone.utc),
     )

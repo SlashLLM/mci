@@ -11,7 +11,6 @@ from app.db.session import get_db
 from app.models import (
     AssignmentStatus,
     ClientOrganization,
-    DispatchMode,
     JobOrder,
     JobOrderStatus,
     PayModel,
@@ -21,6 +20,7 @@ from app.models import (
     ShiftOfferStatus,
     User,
     UserRole,
+    PreferredWorker,
     WorkerProfile,
 )
 from app.schemas.job_orders import (
@@ -37,15 +37,23 @@ from app.routers.workers import _profile_out
 from app.services.audit import log_audit
 from app.services.dispatch import confirmed_count, publish_job_order, waitlist_next_rank
 from app.services.job_status import refresh_job_order_fill_status
+from app.services.ta_client_contracts import (
+    get_active_contract_for_org,
+    list_contracted_org_ids_for_ta,
+    ta_has_active_contract_with_org,
+    user_can_vet_shift_assignments,
+)
 
 router = APIRouter(prefix="/job-orders", tags=["job-orders"])
 
 
-def _can_access_job(user: User, job: JobOrder) -> bool:
-    if user.role in (UserRole.ta, UserRole.admin):
+async def _can_access_job(db: AsyncSession, user: User, job: JobOrder) -> bool:
+    if user.role == UserRole.admin:
         return True
-    if user.role == UserRole.client and user.client_org_id == job.client_org_id:
-        return True
+    if user.role == UserRole.client:
+        return user.client_org_id == job.client_org_id
+    if user.role == UserRole.ta:
+        return await ta_has_active_contract_with_org(db, user.id, job.client_org_id)
     return False
 
 
@@ -66,9 +74,8 @@ async def create_job_order(
         )
     try:
         pay_model = PayModel(body.pay_model)
-        dispatch_mode = DispatchMode(body.dispatch_mode)
     except ValueError:
-        raise HTTPException(400, detail="Invalid pay_model or dispatch_mode")
+        raise HTTPException(400, detail="Invalid pay_model")
 
     job = JobOrder(
         client_org_id=client_org_id,
@@ -87,7 +94,6 @@ async def create_job_order(
         uniform_notes=body.uniform_notes,
         special_instructions=body.special_instructions,
         geofence_radius_m=body.geofence_radius_m,
-        dispatch_mode=dispatch_mode,
         acceptance_window_minutes=body.acceptance_window_minutes,
         status=JobOrderStatus.draft,
     )
@@ -123,11 +129,12 @@ async def create_job_order_for_client(
     org = await db.get(ClientOrganization, client_org_id)
     if not org:
         raise HTTPException(404, detail="Client organization not found")
+    if user.role == UserRole.ta and not await ta_has_active_contract_with_org(db, user.id, client_org_id):
+        raise HTTPException(403, detail="No active contract with this client organization")
     try:
         pay_model = PayModel(body.pay_model)
-        dispatch_mode = DispatchMode(body.dispatch_mode)
     except ValueError:
-        raise HTTPException(400, detail="Invalid pay_model or dispatch_mode")
+        raise HTTPException(400, detail="Invalid pay_model")
     job = JobOrder(
         client_org_id=client_org_id,
         created_by_user_id=user.id,
@@ -145,7 +152,6 @@ async def create_job_order_for_client(
         uniform_notes=body.uniform_notes,
         special_instructions=body.special_instructions,
         geofence_radius_m=body.geofence_radius_m,
-        dispatch_mode=dispatch_mode,
         acceptance_window_minutes=body.acceptance_window_minutes,
         status=JobOrderStatus.draft,
     )
@@ -168,6 +174,14 @@ async def create_job_order_for_client(
 async def _accepted_and_declined_for_job(
     db: AsyncSession, job_id: int
 ) -> tuple[list[JobAssignmentWorkerOut], list[JobDeclinedWorkerOut]]:
+    pref_worker_ids: set[int] = set()
+    r_pref = await db.execute(
+        select(PreferredWorker.worker_id)
+        .join(JobOrder, PreferredWorker.client_org_id == JobOrder.client_org_id)
+        .where(JobOrder.id == job_id)
+    )
+    pref_worker_ids = set(r_pref.scalars().all())
+
     r = await db.execute(
         select(ShiftAssignment, Shift, WorkerProfile)
         .join(Shift, ShiftAssignment.shift_id == Shift.id)
@@ -191,6 +205,14 @@ async def _accepted_and_declined_for_job(
                 worker_name=(wp.full_name or "").strip() or "—",
                 assignment_status=a.status.value,
                 match_score=a.match_score,
+                applied_at=a.created_at,
+                rating_avg=float(wp.rating_avg or 0.0),
+                certifications_count=len(wp.certifications or []),
+                worker_skills=list(wp.skills or []),
+                worker_certifications=list(wp.certifications or []),
+                location_lat=wp.location_lat,
+                location_lng=wp.location_lng,
+                is_preferred=wp.id in pref_worker_ids,
             )
         )
     accepted.sort(key=lambda x: (x.shift_starts_at, x.worker_name.lower()))
@@ -289,19 +311,21 @@ async def _to_out(db: AsyncSession, job: JobOrder) -> JobOrderOut:
         location_lng=job.location_lng,
         workers_required_total=job.workers_required_total,
         pay_model=job.pay_model.value,
-        dispatch_mode=job.dispatch_mode.value,
         geofence_radius_m=job.geofence_radius_m,
         filled_slots=filled,
         total_slots=total_slots,
     )
 
 
-async def _to_detail_out(db: AsyncSession, job: JobOrder) -> JobOrderDetail:
+async def _to_detail_out(db: AsyncSession, job: JobOrder, viewer: User) -> JobOrderDetail:
     await refresh_job_order_fill_status(db, job)
     total_slots, filled = await _slot_totals(db, job.id)
     shifts_sorted = sorted(job.shifts, key=lambda s: s.starts_at)
     accepted_workers, declined_workers = await _accepted_and_declined_for_job(db, job.id)
     rejected_workers = await _rejected_workers_for_job(db, job.id)
+    contract = await get_active_contract_for_org(db, job.client_org_id)
+    has_ta_payroll = contract is not None
+    viewer_can_vet = await user_can_vet_shift_assignments(db, viewer, job)
     return JobOrderDetail(
         id=job.id,
         client_org_id=job.client_org_id,
@@ -313,7 +337,6 @@ async def _to_detail_out(db: AsyncSession, job: JobOrder) -> JobOrderDetail:
         location_lng=job.location_lng,
         workers_required_total=job.workers_required_total,
         pay_model=job.pay_model.value,
-        dispatch_mode=job.dispatch_mode.value,
         geofence_radius_m=job.geofence_radius_m,
         filled_slots=filled,
         total_slots=total_slots,
@@ -329,6 +352,8 @@ async def _to_detail_out(db: AsyncSession, job: JobOrder) -> JobOrderDetail:
         accepted_workers=accepted_workers,
         declined_workers=declined_workers,
         rejected_workers=rejected_workers,
+        has_ta_payroll=has_ta_payroll,
+        viewer_can_vet_assignments=viewer_can_vet,
     )
 
 
@@ -344,7 +369,7 @@ async def _assignment_with_access(
     if not shift:
         raise HTTPException(404)
     job = await db.get(JobOrder, shift.job_order_id)
-    if not job or not _can_access_job(user, job):
+    if not job or not await _can_access_job(db, user, job):
         raise HTTPException(404)
     return a, shift, job
 
@@ -356,6 +381,8 @@ async def promote_assignment_from_waitlist(
     user: Annotated[User, Depends(require_roles(UserRole.ta, UserRole.client, UserRole.admin))],
 ):
     a, shift, job = await _assignment_with_access(db, assignment_id, user)
+    if not await user_can_vet_shift_assignments(db, user, job):
+        raise HTTPException(403, detail="You cannot vet workers for this job")
     if a.status not in (AssignmentStatus.waitlisted, AssignmentStatus.applied):
         raise HTTPException(400, detail="Only waitlisted workers or pending applications can be accepted")
     cc = await confirmed_count(db, shift.id)
@@ -383,6 +410,8 @@ async def reject_assignment(
     user: Annotated[User, Depends(require_roles(UserRole.ta, UserRole.client, UserRole.admin))],
 ):
     a, shift, job = await _assignment_with_access(db, assignment_id, user)
+    if not await user_can_vet_shift_assignments(db, user, job):
+        raise HTTPException(403, detail="You cannot vet workers for this job")
     if a.status == AssignmentStatus.rejected:
         return {"ok": True, "status": a.status.value}
     if a.status not in (AssignmentStatus.confirmed, AssignmentStatus.waitlisted, AssignmentStatus.applied):
@@ -409,6 +438,8 @@ async def move_assignment_to_waitlist(
     user: Annotated[User, Depends(require_roles(UserRole.ta, UserRole.client, UserRole.admin))],
 ):
     a, shift, job = await _assignment_with_access(db, assignment_id, user)
+    if not await user_can_vet_shift_assignments(db, user, job):
+        raise HTTPException(403, detail="You cannot vet workers for this job")
     if a.status != AssignmentStatus.confirmed:
         raise HTTPException(400, detail="Only confirmed assignments can be moved to the waitlist")
     rank = await waitlist_next_rank(db, shift.id)
@@ -435,11 +466,16 @@ async def list_job_orders(
     stmt = select(JobOrder).options(selectinload(JobOrder.shifts))
     if user.role == UserRole.client:
         stmt = stmt.where(JobOrder.client_org_id == user.client_org_id)
+    elif user.role == UserRole.ta:
+        org_ids = await list_contracted_org_ids_for_ta(db, user.id)
+        if not org_ids:
+            return []
+        stmt = stmt.where(JobOrder.client_org_id.in_(org_ids))
     r = await db.execute(stmt.order_by(JobOrder.id.desc()))
     jobs = r.scalars().unique().all()
     out = []
     for j in jobs:
-        if _can_access_job(user, j):
+        if await _can_access_job(db, user, j):
             out.append(await _to_out(db, j))
     return out
 
@@ -452,7 +488,7 @@ async def get_job_worker_profile(
     user: Annotated[User, Depends(require_roles(UserRole.ta, UserRole.client, UserRole.admin))],
 ):
     job = await db.get(JobOrder, job_id)
-    if not job or not _can_access_job(user, job):
+    if not job or not await _can_access_job(db, user, job):
         raise HTTPException(404)
     linked_sa = await db.execute(
         select(ShiftAssignment.id)
@@ -488,9 +524,9 @@ async def get_job_order(
         select(JobOrder).options(selectinload(JobOrder.shifts)).where(JobOrder.id == job_id)
     )
     job = r.scalar_one_or_none()
-    if not job or not _can_access_job(user, job):
+    if not job or not await _can_access_job(db, user, job):
         raise HTTPException(404)
-    return await _to_detail_out(db, job)
+    return await _to_detail_out(db, job, user)
 
 
 @router.post("/{job_id}/publish")
@@ -503,7 +539,7 @@ async def publish_job(
         select(JobOrder).options(selectinload(JobOrder.shifts)).where(JobOrder.id == job_id)
     )
     job = r.scalar_one_or_none()
-    if not job or not _can_access_job(user, job):
+    if not job or not await _can_access_job(db, user, job):
         raise HTTPException(404)
     if job.status != JobOrderStatus.draft:
         raise HTTPException(400, detail="Only draft job orders can be published")
@@ -522,7 +558,7 @@ async def cancel_job_order(
     user: Annotated[User, Depends(require_roles(UserRole.ta, UserRole.client, UserRole.admin))],
 ):
     job = await db.get(JobOrder, job_id)
-    if not job or not _can_access_job(user, job):
+    if not job or not await _can_access_job(db, user, job):
         raise HTTPException(404)
     if job.status == JobOrderStatus.cancelled:
         return {"ok": True, "status": job.status.value}
@@ -549,7 +585,7 @@ async def complete_job_order(
     user: Annotated[User, Depends(require_roles(UserRole.ta, UserRole.admin))],
 ):
     job = await db.get(JobOrder, job_id)
-    if not job:
+    if not job or not await _can_access_job(db, user, job):
         raise HTTPException(404)
     if job.status in (JobOrderStatus.draft, JobOrderStatus.cancelled):
         raise HTTPException(400, detail="Cannot complete draft or cancelled job")

@@ -1,0 +1,12 @@
+{
+  "name": "mci_platform",
+  "private": true,
+  "workspaces": [
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w mci-workforce-frontend",
+    "build": "npm run build -w mci-workforce-frontend",
+    "preview": "npm run preview -w mci-workforce-frontend"
+  }
+}

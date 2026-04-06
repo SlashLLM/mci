@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 
 class LoginRequest(BaseModel):
@@ -28,3 +28,25 @@ class TokenResponse(BaseModel):
     user_id: int
     role: str
     locale: str
+
+
+class WorkerEmailOtpRequest(BaseModel):
+    email: EmailStr
+    locale: str | None = Field(default=None, description="en|zh — stored on new accounts")
+
+
+class WorkerEmailOtpVerify(BaseModel):
+    email: EmailStr
+    code: str = Field(..., min_length=4, max_length=10)
+    locale: str | None = Field(default=None, description="en|zh — used when creating a new account")
+
+
+class ClientEmailOtpRequest(BaseModel):
+    email: EmailStr
+    locale: str | None = Field(default=None, description="en|zh — stored on new accounts")
+
+
+class ClientEmailOtpVerify(BaseModel):
+    email: EmailStr
+    code: str = Field(..., min_length=4, max_length=10)
+    locale: str | None = Field(default=None, description="en|zh — used when creating a new account")

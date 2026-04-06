@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
     AssignmentStatus,
-    DispatchMode,
     JobOrder,
     JobTypeWeight,
     PreferredWorker,
@@ -163,25 +162,8 @@ async def select_dispatch_candidates(
     shift: Shift,
     ranked: list[tuple[WorkerProfile, float]],
 ) -> list[tuple[WorkerProfile, float]]:
-    """Return workers to notify based on dispatch_mode."""
+    """Return workers to notify using a single default strategy."""
     if not ranked:
         return []
     need = min(len(ranked), max(shift.workers_required * 5, shift.workers_required + 10))
-
-    if job.dispatch_mode == DispatchMode.fcfs:
-        return ranked[:need]
-
-    if job.dispatch_mode == DispatchMode.performance:
-        top_n = max(shift.workers_required, int(len(ranked) * 0.2) + 1)
-        return ranked[: min(need, top_n, len(ranked))]
-
-    if job.client_org_id:
-        r = await db.execute(
-            select(PreferredWorker.worker_id).where(PreferredWorker.client_org_id == job.client_org_id)
-        )
-        pids = set(r.scalars().all())
-        pref = [x for x in ranked if x[0].id in pids]
-        rest = [x for x in ranked if x[0].id not in pids]
-        merged = pref + rest
-        return merged[:need]
     return ranked[:need]

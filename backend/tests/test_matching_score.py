@@ -1,6 +1,6 @@
 """Unit tests for rule-based matching score (PRD §9 soft ranking)."""
 
-from app.models import DispatchMode, JobOrder, JobOrderStatus, JobTypeWeight, PayModel, WorkerProfile, WorkerStatus, WorkerTier
+from app.models import JobOrder, JobOrderStatus, JobTypeWeight, PayModel, WorkerProfile, WorkerStatus, WorkerTier
 from app.services.matching import has_required_compliance, score_worker
 
 
@@ -29,7 +29,6 @@ def _job() -> JobOrder:
         pay_model=PayModel.hourly,
         hourly_rate=10.0,
         status=JobOrderStatus.open,
-        dispatch_mode=DispatchMode.fcfs,
     )
 
 
