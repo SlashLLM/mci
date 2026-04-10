@@ -11,7 +11,7 @@ from app.auth.otp_store import set_otp, verify_otp
 from app.auth.passwords import verify_password
 from app.config import get_settings
 from app.db.session import get_db
-from app.models import ClientOrganization, ClientProfile, User, UserRole, WorkerProfile
+from app.models import ClientOrganization, ClientProfile, User, UserRole, WorkerProfile, WorkerStatus
 from app.schemas.auth import (
     LoginRequest,
     OtpRequest,
@@ -187,6 +187,10 @@ async def worker_email_otp_verify(body: WorkerEmailOtpVerify, db: AsyncSession =
             )
         if not user.is_active:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
+        wp_result = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
+        wp = wp_result.scalar_one_or_none()
+        if wp and wp.status == WorkerStatus.inactive:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is inactive")
     else:
         loc = _locale_from_request(body.locale)
         user = User(

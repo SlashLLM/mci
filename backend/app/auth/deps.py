@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt import decode_token
 from app.db.session import get_db
-from app.models import User, UserRole
+from app.models import User, UserRole, WorkerProfile, WorkerStatus
 
 security = HTTPBearer(auto_error=False)
 
@@ -31,9 +31,17 @@ async def get_current_user_optional(
 
 async def get_current_user(
     user: Annotated[Optional[User], Depends(get_current_user_optional)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User:
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account is disabled")
+    if user.role == UserRole.worker:
+        result = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
+        worker = result.scalar_one_or_none()
+        if worker and worker.status == WorkerStatus.inactive:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account is inactive")
     return user
 
 

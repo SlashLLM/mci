@@ -22,6 +22,7 @@ from app.models import (
     UserRole,
     PreferredWorker,
     WorkerProfile,
+    WorkerStatus,
 )
 from app.schemas.job_orders import (
     JobAssignmentWorkerOut,
@@ -591,6 +592,9 @@ async def promote_assignment_from_waitlist(
     user: Annotated[User, Depends(require_roles(UserRole.ta, UserRole.client, UserRole.admin))],
 ):
     a, shift, job = await _assignment_with_access(db, assignment_id, user)
+    worker = await db.get(WorkerProfile, a.worker_id)
+    if worker and worker.status == WorkerStatus.blacklisted:
+        raise HTTPException(403, detail="Blacklisted workers cannot be confirmed to shifts")
     if not await user_can_vet_shift_assignments(db, user, job):
         raise HTTPException(403, detail="You cannot vet workers for this job")
     if a.status not in (AssignmentStatus.waitlisted, AssignmentStatus.applied):
@@ -611,6 +615,25 @@ async def promote_assignment_from_waitlist(
         ends_at=shift.ends_at,
     )
     await refresh_job_order_fill_status(db, job)
+    worker = await db.get(WorkerProfile, a.worker_id)
+    if worker:
+        worker_user = await db.get(User, worker.user_id)
+        if worker_user:
+            await notify_user(
+                db,
+                worker_user.id,
+                title="Shift confirmed",
+                body=(
+                    f"You have been confirmed for {job.title}. "
+                    f"Shift starts at {shift.starts_at.isoformat()}."
+                ),
+                payload={
+                    "type": "assignment_confirmed",
+                    "job_order_id": job.id,
+                    "shift_id": shift.id,
+                    "assignment_id": a.id,
+                },
+            )
     await log_audit(
         db,
         actor_user_id=user.id,

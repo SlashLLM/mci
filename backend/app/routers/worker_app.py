@@ -165,6 +165,23 @@ _HISTORY_STATUSES_ALL: tuple[AssignmentStatus, ...] = (
 )
 
 
+def _effective_assignment_status(
+    assignment: ShiftAssignment,
+    *,
+    now: datetime | None = None,
+) -> AssignmentStatus:
+    current_time = now or datetime.now(timezone.utc)
+    if assignment.status in (AssignmentStatus.applied, AssignmentStatus.waitlisted) and is_past_clock_in_grace_deadline(
+        current_time, assignment.shift.starts_at
+    ):
+        return AssignmentStatus.rejected
+    return assignment.status
+
+
+def _as_utc(dt: datetime) -> datetime:
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 def _history_statuses_for_query(bucket: str) -> tuple[AssignmentStatus, ...]:
     b = (bucket or "all").strip().lower()
     if b == "all":
@@ -190,6 +207,13 @@ def _history_bucket_for_status(st: AssignmentStatus) -> str:
     if st == AssignmentStatus.rejected:
         return "rejected"
     return st.value
+
+
+def _history_bucket_matches_query(bucket: str, query: str) -> bool:
+    normalized_query = (query or "all").strip().lower()
+    if normalized_query == "all":
+        return True
+    return bucket == normalized_query
 
 
 @router.get("/offers")
@@ -652,6 +676,7 @@ async def worker_schedule(
                     AssignmentStatus.applied,
                     AssignmentStatus.completed,
                     AssignmentStatus.cancelled,
+                    AssignmentStatus.rejected,
                 )
             ),
         )
@@ -661,9 +686,10 @@ async def worker_schedule(
 
     def _item(a: ShiftAssignment) -> dict:
         job = a.shift.job_order
+        effective_status = _effective_assignment_status(a, now=now)
         return {
             "assignment_id": a.id,
-            "status": a.status.value,
+            "status": effective_status.value,
             "shift": {
                 "id": a.shift.id,
                 "starts_at": a.shift.starts_at.isoformat(),
@@ -673,9 +699,23 @@ async def worker_schedule(
             },
         }
 
-    confirmed = [_item(a) for a in rows if a.status == AssignmentStatus.confirmed and a.shift.ends_at >= now]
-    pending = [_item(a) for a in rows if a.status in (AssignmentStatus.applied, AssignmentStatus.waitlisted)]
-    past = [_item(a) for a in rows if a.shift.ends_at < now or a.status in (AssignmentStatus.completed, AssignmentStatus.cancelled)]
+    confirmed = [
+        _item(a)
+        for a in rows
+        if _effective_assignment_status(a, now=now) == AssignmentStatus.confirmed and _as_utc(a.shift.ends_at) >= now
+    ]
+    pending = [
+        _item(a)
+        for a in rows
+        if _effective_assignment_status(a, now=now) in (AssignmentStatus.applied, AssignmentStatus.waitlisted)
+    ]
+    past = [
+        _item(a)
+        for a in rows
+        if _as_utc(a.shift.ends_at) < now
+        or _effective_assignment_status(a, now=now)
+        in (AssignmentStatus.completed, AssignmentStatus.cancelled, AssignmentStatus.rejected)
+    ]
     return {
         "confirmed": confirmed,
         "pending_applications": pending,
@@ -693,7 +733,9 @@ async def worker_history(
     wp = r.scalar_one_or_none()
     if not wp:
         return []
-    statuses = _history_statuses_for_query(status)
+    _history_statuses_for_query(status)
+    statuses = _HISTORY_STATUSES_ALL
+    now = datetime.now(timezone.utc)
     r2 = await db.execute(
         select(ShiftAssignment)
         .options(selectinload(ShiftAssignment.shift).selectinload(Shift.job_order))
@@ -706,12 +748,16 @@ async def worker_history(
     rows.sort(key=lambda a: a.shift.starts_at, reverse=True)
     out = []
     for a in rows:
+        effective_status = _effective_assignment_status(a, now=now)
+        history_bucket = _history_bucket_for_status(effective_status)
+        if not _history_bucket_matches_query(history_bucket, status):
+            continue
         job = a.shift.job_order
         out.append(
             {
                 "assignment_id": a.id,
-                "status": a.status.value,
-                "history_bucket": _history_bucket_for_status(a.status),
+                "status": effective_status.value,
+                "history_bucket": history_bucket,
                 "waitlist_rank": a.waitlist_rank,
                 "job_id": job.id,
                 "job_title": job.title,

@@ -650,6 +650,37 @@ function fmtTime(iso: string) {
   }
 }
 
+type ScheduleBucket = "confirmed" | "pending" | "past";
+
+type ScheduleCalendarItem = AssignmentRow & {
+  bucket: ScheduleBucket;
+  day: string;
+};
+
+function dateFromYmd(ymd: string): Date {
+  const [year, month, day] = ymd.split("-").map((part) => Number.parseInt(part, 10));
+  return new Date(year, (month || 1) - 1, day || 1, 12);
+}
+
+function startOfMonth(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), 1, 12);
+}
+
+function shiftMonth(date: Date, delta: number): Date {
+  return new Date(date.getFullYear(), date.getMonth() + delta, 1, 12);
+}
+
+function ymdFromDate(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function titleCaseStatus(value: string): string {
+  return value
+    .replace(/_/g, " ")
+    .trim()
+    .replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
+
 function MarketplaceShiftDetailPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -1003,6 +1034,8 @@ function ShiftsPage() {
     past_shifts: [],
   });
   const [err, setErr] = useState<string | null>(null);
+  const [selectedDay, setSelectedDay] = useState(() => localDateYmd(new Date()));
+  const [visibleMonth, setVisibleMonth] = useState(() => startOfMonth(new Date()));
 
   function ymd(iso: string): string {
     try {
@@ -1021,21 +1054,89 @@ function ShiftsPage() {
     }
   }
 
-  const groupedConfirmed = useMemo(() => {
-    const byDay = new Map<string, AssignmentRow[]>();
-    for (const row of data.confirmed) {
-      const key = row.shift.starts_at.slice(0, 10);
-      if (!byDay.has(key)) byDay.set(key, []);
-      byDay.get(key)!.push(row);
+  const calendarItems = useMemo<ScheduleCalendarItem[]>(
+    () =>
+      [
+        ...data.confirmed.map((row) => ({ ...row, bucket: "confirmed" as const, day: row.shift.starts_at.slice(0, 10) })),
+        ...data.pending_applications.map((row) => ({ ...row, bucket: "pending" as const, day: row.shift.starts_at.slice(0, 10) })),
+        ...data.past_shifts.map((row) => ({ ...row, bucket: "past" as const, day: row.shift.starts_at.slice(0, 10) })),
+      ].sort((a, b) => a.shift.starts_at.localeCompare(b.shift.starts_at)),
+    [data.confirmed, data.pending_applications, data.past_shifts],
+  );
+
+  const shiftsByDay = useMemo(() => {
+    const byDay = new Map<string, ScheduleCalendarItem[]>();
+    for (const row of calendarItems) {
+      if (!byDay.has(row.day)) byDay.set(row.day, []);
+      byDay.get(row.day)!.push(row);
     }
-    return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [data.confirmed]);
+    return byDay;
+  }, [calendarItems]);
+
+  const selectedDayItems = shiftsByDay.get(selectedDay) ?? [];
+  const todayYmd = localDateYmd(new Date());
 
   useEffect(() => {
     api<WorkerSchedulePayload>("/worker/schedule")
       .then(setData)
       .catch((e) => setErr(String(e)));
   }, []);
+
+  useEffect(() => {
+    if (calendarItems.length === 0) return;
+    const defaultDay =
+      shiftsByDay.has(todayYmd) ? todayYmd : calendarItems.find((row) => row.day >= todayYmd)?.day ?? calendarItems[calendarItems.length - 1]!.day;
+    setSelectedDay(defaultDay);
+    setVisibleMonth(startOfMonth(dateFromYmd(defaultDay)));
+  }, [calendarItems, shiftsByDay, todayYmd]);
+
+  const monthLabel = useMemo(
+    () => new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(visibleMonth),
+    [visibleMonth],
+  );
+
+  const weekdayLabels = useMemo(() => {
+    const formatter = new Intl.DateTimeFormat(undefined, { weekday: "short" });
+    const baseSunday = new Date(2024, 0, 7, 12);
+    return Array.from({ length: 7 }, (_, index) =>
+      formatter.format(new Date(baseSunday.getFullYear(), baseSunday.getMonth(), baseSunday.getDate() + index, 12)),
+    );
+  }, []);
+
+  const monthCells = useMemo(() => {
+    const year = visibleMonth.getFullYear();
+    const month = visibleMonth.getMonth();
+    const firstDayOfMonth = new Date(year, month, 1, 12);
+    const daysInMonth = new Date(year, month + 1, 0, 12).getDate();
+    const leadingEmpty = firstDayOfMonth.getDay();
+    const cells: Array<{ ymd: string | null; label: string }> = [];
+    for (let index = 0; index < leadingEmpty; index += 1) cells.push({ ymd: null, label: "" });
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      const current = new Date(year, month, day, 12);
+      cells.push({ ymd: ymdFromDate(current), label: String(day) });
+    }
+    while (cells.length % 7 !== 0) cells.push({ ymd: null, label: "" });
+    return cells;
+  }, [visibleMonth]);
+
+  function bucketBadgeClass(bucket: ScheduleBucket): string {
+    if (bucket === "confirmed") return "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-200";
+    if (bucket === "pending") return "bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200";
+    return "bg-slate-200 text-slate-800 dark:bg-slate-800/70 dark:text-slate-200";
+  }
+
+  function bucketDotClass(bucket: ScheduleBucket): string {
+    if (bucket === "confirmed") return "bg-emerald-500";
+    if (bucket === "pending") return "bg-amber-500";
+    return "bg-slate-400";
+  }
+
+  function bucketLabel(bucket: ScheduleBucket): string {
+    if (bucket === "confirmed") return t("worker_schedule_calendar_legend_confirmed");
+    if (bucket === "pending") return t("worker_schedule_calendar_legend_pending");
+    return t("worker_schedule_calendar_legend_past");
+  }
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-10 md:px-8">
       <PageHeader
@@ -1044,59 +1145,135 @@ function ShiftsPage() {
         description={t("my_shifts_description")}
       />
       {err && <p className="mb-6 text-sm text-error">{err}</p>}
-      <section className="space-y-8">
-        <div>
-          <h2 className="mb-4 text-lg font-bold">{t("worker_schedule_confirmed_heading", { defaultValue: "Confirmed shifts" })}</h2>
-          {groupedConfirmed.length === 0 && <p className="text-sm text-on-surface-variant">No confirmed shifts yet.</p>}
-          <div className="space-y-4">
-            {groupedConfirmed.map(([day, items]) => (
-              <div key={day} className="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-5 shadow-sm">
-                <p className="mb-3 text-sm font-semibold text-primary">{ymd(`${day}T12:00:00`)}</p>
-                <ul className="space-y-3">
-                  {items.map((s) => (
-                    <li key={s.assignment_id} className="flex flex-col gap-2 rounded-xl bg-surface-container-low p-4 sm:flex-row sm:items-center sm:justify-between">
-                      <div>
-                        <p className="font-semibold">{s.shift.job_title}</p>
-                        <p className="text-xs text-on-surface-variant">{fmtTimeRange(s.shift.starts_at, s.shift.ends_at)}</p>
-                      </div>
+      <section className="grid gap-8 xl:grid-cols-[minmax(0,1.25fr)_minmax(22rem,0.85fr)]">
+        <div className="rounded-3xl border border-outline-variant/10 bg-surface-container-lowest p-5 shadow-sm md:p-6">
+          <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-bold text-on-surface">{t("worker_schedule_calendar_heading")}</h2>
+              <p className="text-sm text-on-surface-variant">{t("worker_schedule_calendar_subtitle")}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setVisibleMonth((current) => shiftMonth(current, -1))}
+                className="rounded-xl border border-outline-variant/20 bg-surface-container-low px-3 py-2 text-sm font-semibold text-on-surface hover:bg-surface-container"
+                aria-label={t("worker_schedule_calendar_previous")}
+              >
+                <MatIcon name="chevron_left" className="text-lg" />
+              </button>
+              <div className="min-w-40 text-center text-sm font-semibold text-on-surface">{monthLabel}</div>
+              <button
+                type="button"
+                onClick={() => setVisibleMonth((current) => shiftMonth(current, 1))}
+                className="rounded-xl border border-outline-variant/20 bg-surface-container-low px-3 py-2 text-sm font-semibold text-on-surface hover:bg-surface-container"
+                aria-label={t("worker_schedule_calendar_next")}
+              >
+                <MatIcon name="chevron_right" className="text-lg" />
+              </button>
+            </div>
+          </div>
+
+          <div className="mb-4 flex flex-wrap gap-4 text-xs text-on-surface-variant">
+            {(["confirmed", "pending", "past"] as const).map((bucket) => (
+              <span key={bucket} className="inline-flex items-center gap-2">
+                <span className={`h-2.5 w-2.5 rounded-full ${bucketDotClass(bucket)}`} />
+                {bucketLabel(bucket)}
+              </span>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-7 gap-2">
+            {weekdayLabels.map((label) => (
+              <div key={label} className="px-2 py-1 text-center text-xs font-semibold uppercase tracking-wide text-on-surface-variant">
+                {label}
+              </div>
+            ))}
+            {monthCells.map((cell, index) => {
+              if (!cell.ymd) {
+                return <div key={`empty-${index}`} className="min-h-[6.5rem] rounded-2xl border border-transparent bg-transparent" />;
+              }
+              const dayItems = shiftsByDay.get(cell.ymd) ?? [];
+              const bucketSet = new Set(dayItems.map((item) => item.bucket));
+              const isSelected = cell.ymd === selectedDay;
+              const isToday = cell.ymd === todayYmd;
+              return (
+                <button
+                  key={cell.ymd}
+                  type="button"
+                  onClick={() => setSelectedDay(cell.ymd!)}
+                  className={`min-h-[6.5rem] rounded-2xl border p-3 text-left transition-colors ${
+                    isSelected
+                      ? "border-primary bg-primary-container/20"
+                      : "border-outline-variant/10 bg-surface-container-low hover:bg-surface-container"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <span className={`text-sm font-semibold ${isToday ? "text-primary" : "text-on-surface"}`}>{cell.label}</span>
+                    {dayItems.length > 0 ? (
+                      <span className="rounded-full bg-surface-container-high px-2 py-0.5 text-[10px] font-semibold text-on-surface">
+                        {dayItems.length}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="mt-4 flex items-center gap-1.5">
+                    {Array.from(bucketSet).map((bucket) => (
+                      <span key={bucket} className={`h-2.5 w-2.5 rounded-full ${bucketDotClass(bucket)}`} title={bucketLabel(bucket)} />
+                    ))}
+                  </div>
+                  {dayItems[0] ? (
+                    <p className="mt-3 line-clamp-2 text-xs text-on-surface-variant">{dayItems[0].shift.job_title}</p>
+                  ) : (
+                    <p className="mt-3 text-xs text-transparent">.</p>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="rounded-3xl border border-outline-variant/10 bg-surface-container-lowest p-5 shadow-sm md:p-6">
+          <h2 className="text-lg font-bold text-on-surface">{t("worker_schedule_selected_day_heading")}</h2>
+          <p className="mt-1 text-sm text-on-surface-variant">{ymd(`${selectedDay}T12:00:00`)}</p>
+
+          {selectedDayItems.length === 0 ? (
+            <p className="mt-6 rounded-2xl border border-dashed border-outline-variant/20 bg-surface-container-low/50 p-5 text-sm text-on-surface-variant">
+              {t("worker_schedule_selected_day_empty")}
+            </p>
+          ) : (
+            <ul className="mt-6 space-y-4">
+              {selectedDayItems.map((item) => (
+                <li key={item.assignment_id} className="rounded-2xl border border-outline-variant/10 bg-surface-container-low p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-on-surface">{item.shift.job_title}</p>
+                      <p className="mt-1 text-sm text-on-surface-variant">{fmtTimeRange(item.shift.starts_at, item.shift.ends_at)}</p>
+                      <p className="mt-1 text-xs text-on-surface-variant">
+                        {t("clock_page_shift_label")} #{item.shift.id} · {t("clock_page_assignment_label")} #{item.assignment_id}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <span className={`inline-flex rounded-full px-3 py-1 text-xs font-bold uppercase tracking-wide ${bucketBadgeClass(item.bucket)}`}>
+                        {bucketLabel(item.bucket)}
+                      </span>
+                      <span className="inline-flex rounded-full bg-secondary-container px-3 py-1 text-xs font-bold uppercase tracking-wide text-on-secondary-container">
+                        {titleCaseStatus(item.status)}
+                      </span>
+                    </div>
+                  </div>
+                  {item.bucket === "confirmed" && (
+                    <div className="mt-4">
                       <Link
-                        to={`/worker/clock?assignment=${s.assignment_id}`}
+                        to={`/worker/clock?assignment=${item.assignment_id}`}
                         className="inline-flex justify-center rounded-xl bg-primary px-4 py-2 text-center text-sm font-semibold text-on-primary hover:bg-primary-dim"
                       >
                         {t("my_shifts_clock_in")}
                       </Link>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div>
-          <h2 className="mb-4 text-lg font-bold">{t("worker_schedule_pending_heading", { defaultValue: "Pending applications" })}</h2>
-          {data.pending_applications.length === 0 && <p className="text-sm text-on-surface-variant">No pending applications.</p>}
-          <ul className="space-y-3">
-            {data.pending_applications.map((s) => (
-              <li key={s.assignment_id} className="rounded-xl border border-outline-variant/10 bg-surface-container-lowest p-4">
-                <p className="font-semibold">{s.shift.job_title}</p>
-                <p className="text-xs text-on-surface-variant">{fmtDate(s.shift.starts_at)} · {s.status}</p>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <div>
-          <h2 className="mb-4 text-lg font-bold">{t("worker_schedule_past_heading", { defaultValue: "Past shifts" })}</h2>
-          {data.past_shifts.length === 0 && <p className="text-sm text-on-surface-variant">No past shifts yet.</p>}
-          <ul className="space-y-3">
-            {data.past_shifts.map((s) => (
-              <li key={s.assignment_id} className="rounded-xl border border-outline-variant/10 bg-surface-container-lowest p-4">
-                <p className="font-semibold">{s.shift.job_title}</p>
-                <p className="text-xs text-on-surface-variant">{fmtDate(s.shift.starts_at)} · {s.status}</p>
-              </li>
-            ))}
-          </ul>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </section>
     </div>

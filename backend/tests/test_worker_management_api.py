@@ -13,15 +13,18 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.auth.jwt import create_access_token
+from app.auth.otp_store import set_otp
 from app.config import get_settings
 from app.db.base import Base
 from app.db.session import get_db
 from app.models import (
+    AssignmentStatus,
     ClientOrganization,
     JobOrder,
     JobOrderStatus,
     PayModel,
     Shift,
+    ShiftAssignment,
     ShiftOffer,
     ShiftOfferStatus,
     User,
@@ -30,12 +33,14 @@ from app.models import (
     WorkerStatus,
     WorkerTier,
 )
+from app.routers import auth as auth_router
 from app.routers import worker_app as worker_app_router
 from app.routers import workers as workers_router
 
 get_settings.cache_clear()
 
 _app = FastAPI()
+_app.include_router(auth_router.router)
 _app.include_router(workers_router.router)
 _app.include_router(worker_app_router.router)
 
@@ -53,7 +58,12 @@ def worker_management_setup():
             s.add(org)
             await s.flush()
             ta_user = User(phone="+18880001001", role=UserRole.ta, locale="en")
-            worker_user = User(phone="+18880001002", role=UserRole.worker, locale="en")
+            worker_user = User(
+                phone="+18880001002",
+                email="worker-management@example.com",
+                role=UserRole.worker,
+                locale="en",
+            )
             s.add_all([ta_user, worker_user])
             await s.flush()
             wp = WorkerProfile(
@@ -100,9 +110,18 @@ def worker_management_setup():
             )
             s.add(offer)
             await s.commit()
-            return engine, Session, ta_user.id, worker_user.id, wp.id, shift.id, offer.id
+            return engine, Session, ta_user.id, worker_user.id, worker_user.email, wp.id, shift.id, offer.id
 
-    engine, Session, ta_user_id, worker_user_id, worker_profile_id, shift_id, offer_id = asyncio.run(init())
+    (
+        engine,
+        Session,
+        ta_user_id,
+        worker_user_id,
+        worker_email,
+        worker_profile_id,
+        shift_id,
+        offer_id,
+    ) = asyncio.run(init())
 
     async def override_get_db():
         async with Session() as session:
@@ -118,14 +137,14 @@ def worker_management_setup():
     worker_token = create_access_token(str(worker_user_id), {})
     try:
         with TestClient(_app) as client:
-            yield client, ta_token, worker_token, worker_profile_id, shift_id, offer_id
+            yield client, ta_token, worker_token, worker_email, worker_profile_id, shift_id, offer_id
     finally:
         _app.dependency_overrides.clear()
         asyncio.run(engine.dispose())
 
 
 def test_ta_can_update_worker_management(worker_management_setup):
-    client, ta_token, _worker_token, worker_profile_id, _shift_id, _offer_id = worker_management_setup
+    client, ta_token, _worker_token, _worker_email, worker_profile_id, _shift_id, _offer_id = worker_management_setup
     r = client.patch(
         f"/workers/{worker_profile_id}/management",
         headers={"Authorization": f"Bearer {ta_token}"},
@@ -143,7 +162,7 @@ def test_ta_can_update_worker_management(worker_management_setup):
 
 
 def test_directory_includes_follow_up_and_filter(worker_management_setup):
-    client, ta_token, _worker_token, worker_profile_id, _shift_id, _offer_id = worker_management_setup
+    client, ta_token, _worker_token, _worker_email, worker_profile_id, _shift_id, _offer_id = worker_management_setup
     up = client.patch(
         f"/workers/{worker_profile_id}/management",
         headers={"Authorization": f"Bearer {ta_token}"},
@@ -173,7 +192,7 @@ def test_directory_includes_follow_up_and_filter(worker_management_setup):
 
 
 def test_blacklisted_worker_sees_empty_marketplace_and_offers(worker_management_setup):
-    client, ta_token, worker_token, worker_profile_id, _shift_id, _offer_id = worker_management_setup
+    client, ta_token, worker_token, _worker_email, worker_profile_id, _shift_id, _offer_id = worker_management_setup
     bl = client.patch(
         f"/workers/{worker_profile_id}/management",
         headers={"Authorization": f"Bearer {ta_token}"},
@@ -189,7 +208,7 @@ def test_blacklisted_worker_sees_empty_marketplace_and_offers(worker_management_
 
 
 def test_blacklisted_worker_cannot_apply_or_accept_offer(worker_management_setup):
-    client, ta_token, worker_token, worker_profile_id, shift_id, offer_id = worker_management_setup
+    client, ta_token, worker_token, _worker_email, worker_profile_id, shift_id, offer_id = worker_management_setup
 
     blacklist = client.patch(
         f"/workers/{worker_profile_id}/management",
@@ -211,3 +230,140 @@ def test_blacklisted_worker_cannot_apply_or_accept_offer(worker_management_setup
     )
     assert accept_res.status_code == 403, accept_res.text
     assert "blacklisted" in accept_res.text.lower()
+
+
+def test_inactive_worker_is_forced_out_from_authenticated_endpoints(worker_management_setup):
+    client, ta_token, worker_token, _worker_email, worker_profile_id, _shift_id, _offer_id = worker_management_setup
+
+    inactive = client.patch(
+        f"/workers/{worker_profile_id}/management",
+        headers={"Authorization": f"Bearer {ta_token}"},
+        json={"status": "inactive"},
+    )
+    assert inactive.status_code == 200, inactive.text
+
+    offers = client.get("/worker/offers", headers={"Authorization": f"Bearer {worker_token}"})
+    assert offers.status_code == 401, offers.text
+    assert "inactive" in offers.text.lower()
+
+
+def test_inactive_worker_cannot_login_via_worker_email_otp_verify(worker_management_setup):
+    client, ta_token, _worker_token, worker_email, worker_profile_id, _shift_id, _offer_id = worker_management_setup
+
+    inactive = client.patch(
+        f"/workers/{worker_profile_id}/management",
+        headers={"Authorization": f"Bearer {ta_token}"},
+        json={"status": "inactive"},
+    )
+    assert inactive.status_code == 200, inactive.text
+
+    code = "123456"
+    asyncio.run(set_otp(f"email:{worker_email.lower()}", code))
+    verify = client.post("/auth/worker/email-otp/verify", json={"email": worker_email, "code": code})
+    assert verify.status_code == 403, verify.text
+    assert "inactive" in verify.text.lower()
+
+
+@pytest.fixture
+def worker_expired_application_setup():
+    async def init():
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        now = datetime.now(timezone.utc)
+        async with Session() as s:
+            org = ClientOrganization(name="Org")
+            s.add(org)
+            await s.flush()
+            ta_user = User(phone="+18880002001", role=UserRole.ta, locale="en")
+            worker_user = User(phone="+18880002002", role=UserRole.worker, locale="en")
+            s.add_all([ta_user, worker_user])
+            await s.flush()
+            wp = WorkerProfile(
+                user_id=worker_user.id,
+                full_name="Applied Worker",
+                languages=["en"],
+                job_type_preferences=["Warehouse Worker"],
+                skills=["packing"],
+                certifications=[],
+                availability={},
+                tier=WorkerTier.standard,
+                status=WorkerStatus.active,
+            )
+            s.add(wp)
+            await s.flush()
+            job = JobOrder(
+                client_org_id=org.id,
+                created_by_user_id=ta_user.id,
+                title="Expired Application Shift",
+                job_type="Warehouse Worker",
+                location_address="SG",
+                location_lat=1.0,
+                location_lng=103.0,
+                workers_required_total=1,
+                pay_model=PayModel.hourly,
+                hourly_rate=20.0,
+                status=JobOrderStatus.open,
+            )
+            s.add(job)
+            await s.flush()
+            shift = Shift(
+                job_order_id=job.id,
+                starts_at=now - timedelta(minutes=20),
+                ends_at=now + timedelta(hours=7, minutes=40),
+                workers_required=1,
+            )
+            s.add(shift)
+            await s.flush()
+            assignment = ShiftAssignment(
+                shift_id=shift.id,
+                worker_id=wp.id,
+                status=AssignmentStatus.applied,
+                waitlist_rank=2,
+            )
+            s.add(assignment)
+            await s.commit()
+            return engine, Session, worker_user.id
+
+    engine, Session, worker_user_id = asyncio.run(init())
+
+    async def override_get_db():
+        async with Session() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+
+    _app.dependency_overrides[get_db] = override_get_db
+    worker_token = create_access_token(str(worker_user_id), {})
+    try:
+        with TestClient(_app) as client:
+            yield client, worker_token
+    finally:
+        _app.dependency_overrides.clear()
+        asyncio.run(engine.dispose())
+
+
+def test_expired_application_surfaces_as_rejected_in_history_and_schedule(worker_expired_application_setup):
+    client, worker_token = worker_expired_application_setup
+
+    history = client.get("/worker/history?status=rejected", headers={"Authorization": f"Bearer {worker_token}"})
+    assert history.status_code == 200, history.text
+    history_rows = history.json()
+    assert len(history_rows) == 1
+    assert history_rows[0]["status"] == "rejected"
+    assert history_rows[0]["history_bucket"] == "rejected"
+
+    pending_history = client.get("/worker/history?status=pending", headers={"Authorization": f"Bearer {worker_token}"})
+    assert pending_history.status_code == 200, pending_history.text
+    assert pending_history.json() == []
+
+    schedule = client.get("/worker/schedule", headers={"Authorization": f"Bearer {worker_token}"})
+    assert schedule.status_code == 200, schedule.text
+    schedule_data = schedule.json()
+    assert schedule_data["pending_applications"] == []
+    assert len(schedule_data["past_shifts"]) == 1
+    assert schedule_data["past_shifts"][0]["status"] == "rejected"

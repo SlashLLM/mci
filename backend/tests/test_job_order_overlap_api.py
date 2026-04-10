@@ -41,7 +41,7 @@ _app = FastAPI()
 _app.include_router(job_orders_router.router)
 
 
-async def _seed(active_contract: bool):
+async def _seed(active_contract: bool, worker_status: WorkerStatus = WorkerStatus.active):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -70,7 +70,7 @@ async def _seed(active_contract: bool):
             certifications=["forklift"],
             skills=["loading"],
             tier=WorkerTier.standard,
-            status=WorkerStatus.active,
+            status=worker_status,
         )
         session.add(worker)
         session.add(
@@ -207,12 +207,13 @@ async def _seed(active_contract: bool):
             "ta_user_id": ta_user.id,
             "job_id": current_job.id,
             "current_assignment_id": current_assignment.id,
+            "pending_assignment_id": pending_assignment.id,
         }
 
 
 @contextmanager
-def overlap_api_client(*, active_contract: bool):
-    engine, Session, ids = asyncio.run(_seed(active_contract))
+def overlap_api_client(*, active_contract: bool, worker_status: WorkerStatus = WorkerStatus.active):
+    engine, Session, ids = asyncio.run(_seed(active_contract, worker_status))
 
     async def override_get_db():
         async with Session() as session:
@@ -307,3 +308,13 @@ def test_client_without_ta_contract_can_manage_current_job_overlaps():
         refreshed = client.get(f"/job-orders/{ids['job_id']}", headers=_auth(tokens["client"]))
         assert refreshed.status_code == 200, refreshed.text
         assert refreshed.json()["overlapping_assignments"] == []
+
+
+def test_blacklisted_worker_cannot_be_promoted_from_waitlist():
+    with overlap_api_client(active_contract=True, worker_status=WorkerStatus.blacklisted) as (client, tokens, ids):
+        promote_res = client.post(
+            f"/job-orders/assignments/{ids['pending_assignment_id']}/promote-from-waitlist",
+            headers=_auth(tokens["ta"]),
+        )
+        assert promote_res.status_code == 403, promote_res.text
+        assert "blacklisted" in promote_res.text.lower()

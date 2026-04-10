@@ -126,6 +126,12 @@ export async function api<T>(
   }
 
   if (!res.ok) {
+    if (res.status === 401) {
+      clearSession();
+      if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+        window.location.assign("/login");
+      }
+    }
     const text = await res.text();
     throw new Error(parseFastApiErrorDetail(text) || res.statusText);
   }
