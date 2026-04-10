@@ -287,10 +287,41 @@ function fmtTsShort(iso: string | undefined | null): string {
   }
 }
 
+function formatTimesheetStatus(status: string): string {
+  return status.replace(/_/g, " ");
+}
+
+function timesheetStatusBadgeClass(status: string): string {
+  switch (status) {
+    case "disputed":
+      return "bg-error-container/30 text-on-error-container";
+    case "payment_released":
+      return "bg-secondary-container text-on-secondary-container";
+    case "ta_verified":
+    case "employer_endorsed":
+      return "bg-primary-container text-on-primary-container";
+    default:
+      return "bg-surface-container-high text-on-surface";
+  }
+}
+
+function canDisputeTimesheet(status: string): boolean {
+  return (
+    status === "pending" ||
+    status === "employer_endorsed" ||
+    status === "ta_verified" ||
+    status === "client_payroll_released" ||
+    status === "disputed"
+  );
+}
+
 export function TaTimesheetsPage() {
   const { t } = useTranslation();
   const [rows, setRows] = useState<TaTimesheetRow[]>([]);
   const [selected, setSelected] = useState<TaTimesheetRow | null>(null);
+  const [disputeTarget, setDisputeTarget] = useState<TaTimesheetRow | null>(null);
+  const [disputeNote, setDisputeNote] = useState("");
+  const [disputeErr, setDisputeErr] = useState<string | null>(null);
   const [batchMsg, setBatchMsg] = useState<string | null>(null);
   const [rowExportErr, setRowExportErr] = useState<string | null>(null);
 
@@ -314,6 +345,34 @@ export function TaTimesheetsPage() {
   async function verify(id: number) {
     await api(`/timesheets/${id}/ta-verify`, { method: "POST" });
     await reload();
+  }
+
+  function openDispute(row: TaTimesheetRow) {
+    setDisputeErr(null);
+    setDisputeNote(row.dispute_note?.trim() || "");
+    setDisputeTarget(row);
+  }
+
+  async function submitDispute() {
+    if (!disputeTarget) return;
+    const note = disputeNote.trim();
+    if (!note) {
+      setDisputeErr(t("timesheet_dispute_comment_required"));
+      return;
+    }
+    setDisputeErr(null);
+    try {
+      await api(`/timesheets/${disputeTarget.id}/dispute`, {
+        method: "POST",
+        json: { note },
+      });
+      setDisputeTarget(null);
+      setDisputeNote("");
+      if (selected?.id === disputeTarget.id) setSelected(null);
+      await reload();
+    } catch (e) {
+      setDisputeErr(String(e));
+    }
   }
 
   async function downloadPayrollForEntry(timesheetId: number) {
@@ -350,6 +409,53 @@ export function TaTimesheetsPage() {
 
   return (
     <div>
+      {disputeTarget && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+          role="presentation"
+          onClick={() => setDisputeTarget(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ta-dispute-dialog-title"
+            className="bg-surface-container-lowest border border-outline-variant/25 rounded-2xl shadow-xl max-w-md w-full p-6 text-on-surface"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="ta-dispute-dialog-title" className="font-headline text-lg font-bold mb-2">
+              {t("timesheet_dispute_modal_title")}
+            </h2>
+            <p className="text-sm text-on-surface-variant mb-4">{disputeTarget.worker_name || "—"}</p>
+            <label className="block text-sm font-medium mb-2" htmlFor="ta-timesheet-dispute-note">
+              {t("timesheet_dispute_comment_label")}
+            </label>
+            <textarea
+              id="ta-timesheet-dispute-note"
+              className="min-h-28 w-full rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm"
+              value={disputeNote}
+              onChange={(e) => setDisputeNote(e.target.value)}
+              placeholder={t("timesheet_dispute_comment_placeholder")}
+            />
+            {disputeErr && <p className="mt-3 text-sm text-error">{disputeErr}</p>}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                className="px-4 py-2 rounded-xl text-sm font-medium border border-outline-variant/30"
+                onClick={() => setDisputeTarget(null)}
+              >
+                {t("client_timesheet_endorse_cancel")}
+              </button>
+              <button
+                type="button"
+                className="px-4 py-2 rounded-xl text-sm font-semibold bg-error text-on-error"
+                onClick={() => void submitDispute()}
+              >
+                {t("timesheet_dispute_submit")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {selected && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
@@ -440,13 +546,24 @@ export function TaTimesheetsPage() {
               )}
             </dl>
             <div className="mt-6 flex justify-end">
-              <button
-                type="button"
-                className="px-4 py-2 rounded-xl text-sm font-semibold bg-primary text-on-primary"
-                onClick={() => setSelected(null)}
-              >
-                {t("ta_timesheet_detail_close")}
-              </button>
+              <div className="flex gap-2">
+                {canDisputeTimesheet(selected.status) && (
+                  <button
+                    type="button"
+                    className="px-4 py-2 rounded-xl text-sm font-semibold bg-error text-on-error"
+                    onClick={() => openDispute(selected)}
+                  >
+                    {t("timesheet_flag_for_review")}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="px-4 py-2 rounded-xl text-sm font-semibold bg-primary text-on-primary"
+                  onClick={() => setSelected(null)}
+                >
+                  {t("ta_timesheet_detail_close")}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -506,11 +623,18 @@ export function TaTimesheetsPage() {
                     : "—"}
                 </td>
                 <td className="px-3 py-2 font-semibold">${x.gross_pay.toFixed(2)}</td>
-                <td className="px-3 py-2 text-on-surface-variant">
-                  {x.status}
+                <td className="px-3 py-2">
+                  <span
+                    className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${timesheetStatusBadgeClass(x.status)}`}
+                  >
+                    {formatTimesheetStatus(x.status)}
+                  </span>
                   <span className="block text-[10px] text-on-surface-variant/80 mt-0.5">
                     {fmtTsShort(x.clock_in_at)} / {fmtTsShort(x.clock_out_at)}
                   </span>
+                  {(x.dispute_flag || (x.dispute_note && x.dispute_note.trim())) && (
+                    <span className="block text-[10px] text-error mt-0.5">{x.dispute_note?.trim() || "—"}</span>
+                  )}
                 </td>
                 <td className="px-3 py-2">
                   <div className="flex flex-col gap-1.5 items-start" onClick={(e) => e.stopPropagation()}>
@@ -526,6 +650,15 @@ export function TaTimesheetsPage() {
                         onClick={() => void downloadPayrollForEntry(x.id)}
                       >
                         {t("timesheet_row_export_payroll")}
+                      </button>
+                    )}
+                    {canDisputeTimesheet(x.status) && (
+                      <button
+                        type="button"
+                        className="text-error font-semibold hover:underline text-left"
+                        onClick={() => openDispute(x)}
+                      >
+                        {t("timesheet_flag_for_review")}
                       </button>
                     )}
                   </div>
@@ -751,6 +884,268 @@ type TaStaffProfile = {
   phone: string | null;
   username: string | null;
 };
+
+type TaWorkerRow = {
+  id: number;
+  full_name: string;
+  phone: string;
+  email: string | null;
+  status: string;
+  internal_notes?: string | null;
+  follow_up_required?: boolean;
+};
+
+/** API / JSON may represent flags loosely; normalize for UI. */
+function followUpRequiredFromApi(v: unknown): boolean {
+  return v === true || v === 1 || v === "true";
+}
+
+export function TaWorkersPage() {
+  const { t } = useTranslation();
+  const [rows, setRows] = useState<TaWorkerRow[]>([]);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [followUpFilter, setFollowUpFilter] = useState("");
+  const [selected, setSelected] = useState<TaWorkerRow | null>(null);
+  const [notes, setNotes] = useState("");
+  const [status, setStatus] = useState("active");
+  const [followUp, setFollowUp] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function reload() {
+    setErr(null);
+    try {
+      const q = query.trim();
+      const params = new URLSearchParams();
+      if (q) params.set("q", q);
+      if (statusFilter) params.set("status_filter", statusFilter);
+      if (followUpFilter === "required") params.set("follow_up_filter", "required");
+      if (followUpFilter === "not_required") params.set("follow_up_filter", "not_required");
+      const suffix = params.toString() ? `?${params.toString()}` : "";
+      const data = await api<TaWorkerRow[]>(`/workers/directory${suffix}`);
+      setRows(
+        data.map((r) => ({
+          ...r,
+          follow_up_required: followUpRequiredFromApi(r.follow_up_required),
+        })),
+      );
+    } catch (e) {
+      setErr(String(e));
+    }
+  }
+
+  useEffect(() => {
+    void reload();
+  }, []);
+
+  function openEditor(row: TaWorkerRow) {
+    setSelected(row);
+    setStatus(row.status || "active");
+    setNotes(row.internal_notes || "");
+    setFollowUp(followUpRequiredFromApi(row.follow_up_required));
+  }
+
+  async function loadManagement(workerId: number) {
+    try {
+      const profile = await api<TaWorkerRow>(`/workers/${workerId}/management`);
+      const normalized: TaWorkerRow = {
+        ...profile,
+        follow_up_required: followUpRequiredFromApi(profile.follow_up_required),
+      };
+      setSelected(normalized);
+      setStatus(normalized.status || "active");
+      setNotes(normalized.internal_notes || "");
+      setFollowUp(followUpRequiredFromApi(normalized.follow_up_required));
+    } catch (e) {
+      setErr(String(e));
+    }
+  }
+
+  async function save() {
+    if (!selected) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const updated = await api<TaWorkerRow>(`/workers/${selected.id}/management`, {
+        method: "PATCH",
+        json: {
+          status,
+          internal_notes: notes,
+          follow_up_required: followUp,
+        },
+      });
+      const fu = followUpRequiredFromApi(updated.follow_up_required);
+      setRows((prev) =>
+        prev.map((r) =>
+          r.id === selected.id
+            ? {
+                ...r,
+                full_name: updated.full_name,
+                phone: updated.phone,
+                email: updated.email,
+                status: updated.status,
+                internal_notes: updated.internal_notes ?? undefined,
+                follow_up_required: fu,
+              }
+            : r,
+        ),
+      );
+      setSelected(null);
+      await reload();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h1 className="font-headline text-3xl md:text-4xl font-extrabold text-on-surface tracking-tight mb-2">
+          {t("ta_workers_title")}
+        </h1>
+        <p className="text-on-surface-variant text-sm">{t("ta_workers_intro")}</p>
+      </div>
+      {err && <p className="text-sm text-error">{err}</p>}
+      <div className="flex flex-wrap gap-2">
+        <input
+          className="rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={t("ta_workers_search_ph")}
+        />
+        <select
+          className="rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm"
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          aria-label={t("job_detail_profile_status")}
+        >
+          <option value="">{t("ta_workers_all_statuses")}</option>
+          <option value="active">{t("worker_status_active")}</option>
+          <option value="inactive">{t("worker_status_inactive")}</option>
+          <option value="blacklisted">{t("worker_status_blacklisted")}</option>
+        </select>
+        <select
+          className="rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm"
+          value={followUpFilter}
+          onChange={(e) => setFollowUpFilter(e.target.value)}
+          aria-label={t("ta_worker_follow_up")}
+        >
+          <option value="">{t("ta_workers_follow_up_all")}</option>
+          <option value="required">{t("ta_workers_follow_up_required_only")}</option>
+          <option value="not_required">{t("ta_workers_follow_up_not_required")}</option>
+        </select>
+        <button
+          type="button"
+          className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-on-primary"
+          onClick={() => void reload()}
+        >
+          {t("client_filter")}
+        </button>
+      </div>
+      <div className="overflow-x-auto rounded-xl border border-outline-variant/20">
+        <table className="w-full min-w-[760px] text-left text-sm text-on-surface">
+          <thead className="bg-surface-container-low text-xs uppercase text-on-surface-variant">
+            <tr>
+              <th className="px-3 py-2">{t("timesheet_col_worker")}</th>
+              <th className="px-3 py-2">{t("job_detail_profile_phone")}</th>
+              <th className="px-3 py-2">{t("job_detail_profile_email")}</th>
+              <th className="px-3 py-2">{t("job_detail_profile_status")}</th>
+              <th className="px-3 py-2">{t("ta_worker_follow_up")}</th>
+              <th className="px-3 py-2" />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.id} className="border-t border-outline-variant/10">
+                <td className="px-3 py-2 font-medium">{row.full_name || "—"}</td>
+                <td className="px-3 py-2">{row.phone || "—"}</td>
+                <td className="px-3 py-2">{row.email || "—"}</td>
+                <td className="px-3 py-2">{row.status}</td>
+                <td className="px-3 py-2">
+                  {followUpRequiredFromApi(row.follow_up_required)
+                    ? t("client_timesheet_endorse_prefer_yes")
+                    : t("client_timesheet_endorse_prefer_no")}
+                </td>
+                <td className="px-3 py-2 text-right">
+                  <button
+                    type="button"
+                    className="text-sm font-semibold text-primary hover:underline"
+                    onClick={() => {
+                      openEditor(row);
+                      void loadManagement(row.id);
+                    }}
+                  >
+                    {t("job_detail_view_profile")}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {selected && (
+        <div className="rounded-2xl border border-outline-variant/25 bg-surface-container-lowest p-5">
+          <h2 className="font-headline text-lg font-bold text-on-surface mb-3">
+            {selected.full_name || "—"}
+          </h2>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div>
+              <label className="block text-xs font-medium text-on-surface-variant mb-1">
+                {t("job_detail_profile_status")}
+              </label>
+              <select
+                className="w-full rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm"
+                value={status}
+                onChange={(e) => setStatus(e.target.value)}
+              >
+                <option value="active">{t("worker_status_active")}</option>
+                <option value="inactive">{t("worker_status_inactive")}</option>
+                <option value="blacklisted">{t("worker_status_blacklisted")}</option>
+              </select>
+            </div>
+            <div className="flex items-end">
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={followUp} onChange={(e) => setFollowUp(e.target.checked)} />
+                <span>{t("ta_worker_follow_up_required")}</span>
+              </label>
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-xs font-medium text-on-surface-variant mb-1">
+                {t("ta_worker_internal_notes")}
+              </label>
+              <textarea
+                className="min-h-24 w-full rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder={t("ta_worker_internal_notes_ph")}
+              />
+            </div>
+          </div>
+          <div className="mt-4 flex gap-2">
+            <button
+              type="button"
+              className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-on-primary disabled:opacity-50"
+              disabled={busy}
+              onClick={() => void save()}
+            >
+              {busy ? t("job_match_weights_saving") : t("ta_worker_save")}
+            </button>
+            <button
+              type="button"
+              className="rounded-xl border border-outline-variant/30 px-4 py-2 text-sm font-medium"
+              onClick={() => setSelected(null)}
+            >
+              {t("client_timesheet_endorse_cancel")}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function TaProfilePage() {
   const { t } = useTranslation();

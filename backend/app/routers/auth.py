@@ -267,8 +267,7 @@ async def client_email_otp_verify(body: ClientEmailOtpVerify, db: AsyncSession =
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
     else:
         loc = _locale_from_request(body.locale)
-        org_name = norm.split("@")[0].replace(".", " ").strip().title() or "New Client"
-        org = ClientOrganization(name=org_name)
+        org = ClientOrganization(name="New client organization")
         db.add(org)
         await db.flush()
         user = User(
@@ -285,7 +284,7 @@ async def client_email_otp_verify(body: ClientEmailOtpVerify, db: AsyncSession =
         db.add(
             ClientProfile(
                 user_id=user.id,
-                company_name=org.name,
+                company_name="",
                 contact_email=norm,
             )
         )

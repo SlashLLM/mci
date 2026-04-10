@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.constants.job_types import ALLOWED_JOB_TYPES
 from app.constants.skills import canonicalize_skill
@@ -22,6 +22,27 @@ class ShiftOut(BaseModel):
     workers_required: int
 
 
+class MatchWeightConfig(BaseModel):
+    weight_proximity: float = Field(ge=0.0)
+    weight_rating: float = Field(ge=0.0)
+    weight_job_type: float = Field(ge=0.0)
+    weight_completion: float = Field(ge=0.0)
+    weight_tier: float = Field(ge=0.0)
+
+    @model_validator(mode="after")
+    def at_least_one_weight_positive(self) -> "MatchWeightConfig":
+        total = (
+            self.weight_proximity
+            + self.weight_rating
+            + self.weight_job_type
+            + self.weight_completion
+            + self.weight_tier
+        )
+        if total <= 0:
+            raise ValueError("At least one match weight must be greater than zero")
+        return self
+
+
 class JobOrderCreate(BaseModel):
     title: str
     job_type: str
@@ -39,6 +60,7 @@ class JobOrderCreate(BaseModel):
     geofence_radius_m: int = 200
     acceptance_window_minutes: int = 120
     shifts: list[ShiftBlock] = Field(default_factory=list)
+    match_weights: Optional[MatchWeightConfig] = None
 
     @field_validator("job_type")
     @classmethod
@@ -77,6 +99,8 @@ class JobOrderOut(BaseModel):
     geofence_radius_m: int
     filled_slots: int = 0
     total_slots: int = 0
+    match_weights: MatchWeightConfig
+    match_weight_overrides: Optional[MatchWeightConfig] = None
 
 
 class JobAssignmentWorkerOut(BaseModel):
@@ -124,6 +148,23 @@ class JobRejectedWorkerOut(BaseModel):
     match_score: Optional[float] = None
 
 
+class JobOverlapAssignmentOut(BaseModel):
+    """Confirmed worker assignment on this job that overlaps another confirmed job."""
+
+    current_assignment_id: int
+    current_shift_id: int
+    current_shift_starts_at: datetime
+    current_shift_ends_at: datetime
+    worker_profile_id: int
+    worker_name: str
+    overlap_assignment_id: int
+    overlap_shift_id: int
+    overlap_shift_starts_at: datetime
+    overlap_shift_ends_at: datetime
+    overlap_job_id: int
+    overlap_job_title: str
+
+
 class JobOrderDetail(JobOrderOut):
     hourly_rate: Optional[float] = None
     per_shift_rate: Optional[float] = None
@@ -137,5 +178,14 @@ class JobOrderDetail(JobOrderOut):
     accepted_workers: list[JobAssignmentWorkerOut] = Field(default_factory=list)
     declined_workers: list[JobDeclinedWorkerOut] = Field(default_factory=list)
     rejected_workers: list[JobRejectedWorkerOut] = Field(default_factory=list)
+    overlapping_assignments: list[JobOverlapAssignmentOut] = Field(default_factory=list)
     has_ta_payroll: bool = False
     viewer_can_vet_assignments: bool = True
+
+
+class JobOrderMatchWeightsUpdate(BaseModel):
+    match_weights: Optional[MatchWeightConfig] = None
+
+
+class JobAssignmentRejectRequest(BaseModel):
+    reason: Optional[Literal["schedule_conflict"]] = None

@@ -51,18 +51,41 @@ export default function ClientOnboardingPage() {
       .catch((e) => setMsg(String(e)));
   }, [nav]);
 
-  async function saveProfile() {
-    if (!profile) return;
-    setMsg(null);
-    setSaving(true);
+  async function persistProfile(): Promise<boolean> {
+    if (!profile) return false;
     try {
       const updated = await api<ClientProfile>("/client/me/profile", { method: "PUT", json: profile });
       setProfile(updated);
+      return true;
+    } catch (e) {
+      setMsg(String(e));
+      return false;
+    }
+  }
+
+  async function goNext() {
+    if (!profile || step >= 4) return;
+    setMsg(null);
+    setSaving(true);
+    try {
+      const ok = await persistProfile();
+      if (ok) setStep((s) => s + 1);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveProfile() {
+    if (!profile) return;
+    setMsg(null);
+    if (!terms) {
+      setMsg(t("client_onboarding_terms_required"));
+      return;
+    }
+    setSaving(true);
+    try {
+      if (!(await persistProfile())) return;
       if (pdpa) await api("/client/me/pdpa-consent", { method: "POST" });
-      if (!terms) {
-        setMsg(t("client_onboarding_terms_required"));
-        return;
-      }
       await api("/client/me/onboarding/complete", { method: "POST", json: { terms_accepted: true } });
       setStep(5);
     } catch (e) {
@@ -272,10 +295,11 @@ export default function ClientOnboardingPage() {
             {step < 4 && (
               <button
                 type="button"
-                className="flex-1 bg-primary text-on-primary font-semibold py-3 rounded-xl text-sm"
-                onClick={() => setStep((s) => s + 1)}
+                disabled={saving}
+                className="flex-1 bg-primary text-on-primary font-semibold py-3 rounded-xl text-sm disabled:opacity-50"
+                onClick={() => void goNext()}
               >
-                {t("wizard_next")}
+                {saving ? "…" : t("wizard_next")}
               </button>
             )}
             {step === 4 && (

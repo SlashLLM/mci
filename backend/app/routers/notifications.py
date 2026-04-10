@@ -1,8 +1,9 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.responses import Response
 
 from app.auth.deps import get_current_user
 from app.db.session import get_db
@@ -31,3 +32,13 @@ async def list_notifications(
         }
         for n in rows
     ]
+
+
+@router.delete("")
+async def clear_notifications(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+):
+    await db.execute(delete(Notification).where(Notification.user_id == user.id))
+    await db.commit()
+    return Response(status_code=204)

@@ -10,24 +10,29 @@ import WorkerWelcomePage from "./pages/worker/WorkerWelcomePage";
 import { JobOrderDetailView } from "./components/jobOrder/JobOrderDetailView";
 import {
   ClientLayout,
+  ClientJobHistoryPage,
   ClientJobsList,
   ClientNewJob,
   ClientTimesheetsPage,
   ClientLivePage,
   ClientTalentAgentPage,
 } from "./pages/client/ClientApp";
+import { ClientAnalyticsPage } from "./pages/client/ClientAnalyticsPage";
 import ClientSignupPage from "./pages/client/ClientSignupPage";
 import ClientOnboardingPage from "./pages/client/ClientOnboardingPage";
+import { ClientProfilePage } from "./pages/client/ClientProfilePage";
 import { TaPortalLayout } from "./components/ta/TaPortalLayout";
 import {
   TaJobsList,
   TaNewJobPage,
-  TaAnalyticsPage,
   TaExportsPage,
   TaTimesheetsPage,
   TaClientsPage,
   TaProfilePage,
+  TaWorkersPage,
 } from "./pages/ta/TaApp";
+import { TaAnalyticsPage } from "./pages/ta/TaAnalyticsPage";
+import NotificationsPage from "./components/portal/NotificationsPage";
 
 function GuardWorker({ children }: { children: React.ReactNode }) {
   if (!getToken()) return <Navigate to="/login" replace />;
@@ -146,6 +151,8 @@ export default function App() {
       >
         <Route index element={<TaJobsList />} />
         <Route path="profile" element={<TaProfilePage />} />
+        <Route path="workers" element={<TaWorkersPage />} />
+        <Route path="notifications" element={<NotificationsPage />} />
         <Route path="new" element={<TaNewJobPage />} />
         <Route path="analytics" element={<TaAnalyticsPage />} />
         <Route path="exports" element={<TaExportsPage />} />
@@ -164,7 +171,11 @@ export default function App() {
         }
       >
         <Route index element={<ClientJobsList />} />
+        <Route path="analytics" element={<ClientAnalyticsPage />} />
+        <Route path="profile" element={<ClientProfilePage />} />
+        <Route path="job-history" element={<ClientJobHistoryPage />} />
         <Route path="new" element={<ClientNewJob />} />
+        <Route path="notifications" element={<NotificationsPage />} />
         <Route path="timesheets" element={<ClientTimesheetsPage />} />
         <Route path="ta-contract" element={<ClientTalentAgentPage />} />
         <Route path="live" element={<ClientLivePage />} />

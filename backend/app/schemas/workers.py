@@ -44,6 +44,18 @@ class WorkerProfileIn(BaseModel):
         return out
 
 
+class WorkerDirectoryEntryOut(BaseModel):
+    """TA/admin worker list row — includes management fields not on WorkerProfileOut."""
+
+    id: int
+    full_name: str
+    phone: str = ""
+    email: Optional[str] = None
+    status: str
+    internal_notes: Optional[str] = None
+    follow_up_required: bool = False
+
+
 class WorkerProfileOut(BaseModel):
     id: int
     full_name: str
@@ -71,6 +83,28 @@ class WorkerProfileOut(BaseModel):
         from_attributes = True
 
 
+class WorkerManagementUpdateIn(BaseModel):
+    status: Optional[str] = None
+    internal_notes: Optional[str] = None
+    follow_up_required: Optional[bool] = None
+
+
+class WorkerManagementOut(BaseModel):
+    id: int
+    full_name: str
+    phone: str = ""
+    email: Optional[str] = None
+    languages: list = []
+    job_type_preferences: list = []
+    skills: list = []
+    certifications: list = []
+    rating_avg: float = 0.0
+    tier: str = "standard"
+    status: str
+    internal_notes: Optional[str] = None
+    follow_up_required: bool = False
+
+
 class OnboardingCompleteIn(BaseModel):
     terms_accepted: bool = Field(..., description="Must be true to complete onboarding")
 
@@ -92,6 +126,7 @@ class PreferredClientOut(BaseModel):
 
 class WorkerReputationOut(BaseModel):
     rating_avg: float
+    points: int
     tier: str
     ratings: list[WorkerRatingItemOut]
     preferred_by_clients: list[PreferredClientOut]

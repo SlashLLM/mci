@@ -2,7 +2,7 @@ import os
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +28,9 @@ from app.schemas.workers import (
     PreferredClientOut,
     ProfileCompletenessDetailOut,
     ProfileCompletenessItemOut,
+    WorkerDirectoryEntryOut,
+    WorkerManagementOut,
+    WorkerManagementUpdateIn,
     WorkerProfileIn,
     WorkerProfileOut,
     WorkerRatingItemOut,
@@ -180,6 +183,36 @@ def _profile_out(wp: WorkerProfile, user: User) -> WorkerProfileOut:
     )
 
 
+def _directory_row_out(wp: WorkerProfile, user: User) -> WorkerDirectoryEntryOut:
+    return WorkerDirectoryEntryOut(
+        id=wp.id,
+        full_name=wp.full_name or "",
+        phone=user.phone or "",
+        email=user.email,
+        status=wp.status.value,
+        internal_notes=wp.internal_notes,
+        follow_up_required=bool(wp.follow_up_required),
+    )
+
+
+def _worker_management_out(wp: WorkerProfile, user: User) -> WorkerManagementOut:
+    return WorkerManagementOut(
+        id=wp.id,
+        full_name=wp.full_name,
+        phone=user.phone or "",
+        email=user.email,
+        languages=wp.languages or [],
+        job_type_preferences=wp.job_type_preferences or [],
+        skills=wp.skills or [],
+        certifications=wp.certifications or [],
+        rating_avg=wp.rating_avg,
+        tier=wp.tier.value,
+        status=wp.status.value,
+        internal_notes=wp.internal_notes,
+        follow_up_required=bool(wp.follow_up_required),
+    )
+
+
 @router.get("/me/reputation", response_model=WorkerReputationOut)
 async def get_my_reputation(
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -227,6 +260,7 @@ async def get_my_reputation(
 
     return WorkerReputationOut(
         rating_avg=float(wp.rating_avg or 0.0),
+        points=int(wp.points or 0),
         tier=wp.tier.value,
         ratings=ratings_out,
         preferred_by_clients=pref_clients,
@@ -457,19 +491,30 @@ async def document_signed_url(
     return {"token": token, "url": f"/files/access?token={token}"}
 
 
-@router.get("/directory", response_model=list[WorkerProfileOut])
+@router.get("/directory", response_model=list[WorkerDirectoryEntryOut])
 async def list_workers_directory(
+    response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],
-    user: Annotated[User, Depends(require_roles(UserRole.ta, UserRole.admin))],
+    _user: Annotated[User, Depends(require_roles(UserRole.ta, UserRole.admin))],
     q: str | None = None,
     status_filter: str | None = None,
+    follow_up_filter: str | None = None,
 ):
+    response.headers["Cache-Control"] = "no-store"
     stmt = select(WorkerProfile)
     if status_filter:
         try:
             stmt = stmt.where(WorkerProfile.status == WorkerStatus(status_filter))
         except ValueError:
             raise HTTPException(400, detail="Invalid status_filter")
+    if follow_up_filter:
+        fu = follow_up_filter.strip().lower()
+        if fu in ("required", "yes", "true", "1"):
+            stmt = stmt.where(WorkerProfile.follow_up_required.is_(True))
+        elif fu in ("not_required", "no", "false", "0"):
+            stmt = stmt.where(WorkerProfile.follow_up_required.is_(False))
+        else:
+            raise HTTPException(400, detail="Invalid follow_up_filter")
     r = await db.execute(stmt)
     rows = r.scalars().all()
     out = []
@@ -479,7 +524,7 @@ async def list_workers_directory(
         u = await db.get(User, wp.user_id)
         if not u:
             continue
-        out.append(_profile_out(wp, u))
+        out.append(_directory_row_out(wp, u))
     return out
 
 
@@ -506,3 +551,65 @@ async def update_worker_status(
         new_values={"status": new_status},
     )
     return {"ok": True}
+
+
+@router.get("/{worker_id}/management", response_model=WorkerManagementOut)
+async def get_worker_management(
+    response: Response,
+    worker_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.ta, UserRole.admin))],
+):
+    del user
+    response.headers["Cache-Control"] = "no-store"
+    wp = await db.get(WorkerProfile, worker_id)
+    if not wp:
+        raise HTTPException(404)
+    profile_user = await db.get(User, wp.user_id)
+    if not profile_user:
+        raise HTTPException(404)
+    return _worker_management_out(wp, profile_user)
+
+
+@router.patch("/{worker_id}/management", response_model=WorkerManagementOut)
+async def update_worker_management(
+    worker_id: int,
+    body: WorkerManagementUpdateIn,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.ta, UserRole.admin))],
+):
+    wp = await db.get(WorkerProfile, worker_id)
+    if not wp:
+        raise HTTPException(404)
+    old = {
+        "status": wp.status.value,
+        "internal_notes": wp.internal_notes,
+        "follow_up_required": bool(wp.follow_up_required),
+    }
+    if body.status is not None:
+        try:
+            wp.status = WorkerStatus(body.status)
+        except ValueError:
+            raise HTTPException(400, detail="Invalid status")
+    if body.internal_notes is not None:
+        wp.internal_notes = body.internal_notes.strip() or None
+    if body.follow_up_required is not None:
+        wp.follow_up_required = body.follow_up_required
+    await db.flush()
+    await log_audit(
+        db,
+        actor_user_id=user.id,
+        action="worker_management_update",
+        entity_type="WorkerProfile",
+        entity_id=str(worker_id),
+        old_values=old,
+        new_values={
+            "status": wp.status.value,
+            "internal_notes": wp.internal_notes,
+            "follow_up_required": bool(wp.follow_up_required),
+        },
+    )
+    profile_user = await db.get(User, wp.user_id)
+    if not profile_user:
+        raise HTTPException(404)
+    return _worker_management_out(wp, profile_user)

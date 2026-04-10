@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
-import { clearSession } from "../../api";
+import { api, clearSession } from "../../api";
 
 function MatIcon({ name, className = "" }: { name: string; className?: string }) {
   return <span className={`material-symbols-outlined ${className}`.trim()} aria-hidden>{name}</span>;
@@ -42,6 +42,15 @@ type UnifiedPortalLayoutProps = {
   children: ReactNode;
 };
 
+type PortalNotification = {
+  id: number;
+  title: string;
+  body: string;
+  read_at?: string | null;
+  created_at?: string | null;
+  payload?: Record<string, unknown>;
+};
+
 const sidebarInactive =
   "w-full flex items-center gap-3 text-slate-500 hover:text-primary px-6 py-3 rounded-l-xl";
 const sidebarActive =
@@ -76,7 +85,7 @@ function SideNavLink({
 }
 
 export default function UnifiedPortalLayout({
-  role: _role,
+  role,
   roleInitial,
   brandTitle,
   brandSubtitleKey,
@@ -91,6 +100,12 @@ export default function UnifiedPortalLayout({
   const location = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notifications, setNotifications] = useState<PortalNotification[]>([]);
+  const [notificationsLoading, setNotificationsLoading] = useState(false);
+  const [notificationsError, setNotificationsError] = useState<string | null>(null);
+  const [notificationsClearing, setNotificationsClearing] = useState(false);
+  const lastSeenMaxNotificationIdRef = useRef(0);
 
   const primaryHref = useMemo(() => {
     if (primaryCta.getHref) return primaryCta.getHref(location.pathname, location.search);
@@ -100,6 +115,86 @@ export default function UnifiedPortalLayout({
   useEffect(() => {
     setMenuOpen(false);
   }, [location.pathname]);
+
+  const loadNotifications = useCallback(async () => {
+    setNotificationsLoading(true);
+    setNotificationsError(null);
+    try {
+      setNotifications(await api<PortalNotification[]>("/notifications"));
+    } catch (e) {
+      setNotificationsError(String(e));
+    } finally {
+      setNotificationsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadNotifications();
+  }, [loadNotifications]);
+
+  useEffect(() => {
+    if (!notificationsOpen) return;
+    const maxId = notifications.length ? Math.max(...notifications.map((n) => n.id)) : 0;
+    lastSeenMaxNotificationIdRef.current = maxId;
+  }, [notificationsOpen, notifications]);
+
+  useEffect(() => {
+    const onFocus = () => {
+      if (!notificationsOpen) void loadNotifications();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [notificationsOpen, loadNotifications]);
+
+  const unreadCount = useMemo(() => notifications.filter((n) => !n.read_at).length, [notifications]);
+
+  const showNewNotificationsBanner =
+    !notificationsOpen &&
+    notifications.some((n) => !n.read_at && n.id > lastSeenMaxNotificationIdRef.current);
+
+  function toggleNotifications() {
+    setNotificationsOpen((open) => {
+      const next = !open;
+      if (next) void loadNotifications();
+      return next;
+    });
+  }
+
+  function openNotificationsFromBanner() {
+    setNotificationsOpen(true);
+    void loadNotifications();
+  }
+
+  async function clearAllNotifications() {
+    if (notifications.length === 0 || notificationsClearing) return;
+    setNotificationsClearing(true);
+    setNotificationsError(null);
+    try {
+      await api("/notifications", { method: "DELETE" });
+      setNotifications([]);
+      lastSeenMaxNotificationIdRef.current = 0;
+    } catch (e) {
+      setNotificationsError(String(e));
+    } finally {
+      setNotificationsClearing(false);
+    }
+  }
+
+  function formatNotificationTime(iso: string | null | undefined): string {
+    if (!iso) return "";
+    try {
+      return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(iso));
+    } catch {
+      return iso;
+    }
+  }
+
+  function handleNotificationClick(notification: PortalNotification) {
+    if (role === "worker" && notification.payload?.type === "timesheet_disputed") {
+      navigate("/worker/earnings");
+      setNotificationsOpen(false);
+    }
+  }
 
   const sidebarSubtitle = brandSubtitleKey ? t(brandSubtitleKey) : "";
   const asideWidthClass = sidebarCollapsed ? "md:w-20" : "md:w-64";
@@ -134,13 +229,21 @@ export default function UnifiedPortalLayout({
             <option value="en">EN</option>
             <option value="zh">中文</option>
           </select>
-          <button
-            type="button"
-            className="hidden rounded-full p-2 text-slate-600 transition-colors hover:bg-slate-200/50 active:scale-95 sm:block"
-            aria-label="Notifications"
-          >
-            <MatIcon name="notifications" />
-          </button>
+          <div className="relative hidden sm:block">
+            <button
+              type="button"
+              className="rounded-full p-2 text-slate-600 transition-colors hover:bg-slate-200/50 active:scale-95"
+              aria-label={t("notifications_title")}
+              onClick={toggleNotifications}
+            >
+              <MatIcon name="notifications" />
+            </button>
+            {unreadCount > 0 && (
+              <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-error px-1.5 py-0.5 text-center text-[10px] font-bold leading-none text-on-error">
+                {unreadCount > 99 ? "99+" : unreadCount}
+              </span>
+            )}
+          </div>
           <NavLink
             to={primaryHref}
             className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-on-primary shadow-sm transition-colors hover:bg-primary-dim active:scale-95 md:px-6"
@@ -154,6 +257,80 @@ export default function UnifiedPortalLayout({
           </div>
         </div>
       </header>
+
+      {showNewNotificationsBanner && (
+        <button
+          type="button"
+          className="fixed top-16 right-4 z-[55] hidden w-[22rem] max-w-[calc(100vw-2rem)] items-center justify-center gap-2 rounded-b-xl border border-error/80 border-t-0 bg-error px-4 py-2.5 text-center text-sm font-semibold text-on-error shadow-lg shadow-error/20 sm:flex"
+          aria-live="polite"
+          onClick={openNotificationsFromBanner}
+        >
+          <MatIcon name="notifications" className="text-lg" />
+          {t("notifications_new_banner")}
+        </button>
+      )}
+
+      {notificationsOpen && (
+        <>
+          <button
+            type="button"
+            className="fixed inset-0 z-40 bg-transparent"
+            aria-label={t("ta_timesheet_detail_close")}
+            onClick={() => setNotificationsOpen(false)}
+          />
+          <section className="fixed right-4 top-20 z-[70] w-[22rem] max-w-[calc(100vw-2rem)] rounded-2xl border border-outline-variant/25 bg-surface-container-lowest p-4 shadow-2xl">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h2 className="font-headline text-base font-bold text-on-surface">{t("notifications_title")}</h2>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  disabled={notificationsLoading || notificationsClearing || notifications.length === 0}
+                  className="rounded-lg px-2 py-1 text-xs font-semibold text-error hover:bg-error/10 disabled:pointer-events-none disabled:opacity-40"
+                  onClick={() => void clearAllNotifications()}
+                >
+                  {t("notifications_clear_all")}
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg p-1 text-on-surface-variant hover:bg-surface-container-high"
+                  aria-label={t("ta_timesheet_detail_close")}
+                  onClick={() => setNotificationsOpen(false)}
+                >
+                  <MatIcon name="close" />
+                </button>
+              </div>
+            </div>
+            {notificationsLoading ? <p className="text-sm text-on-surface-variant">{t("notifications_loading")}</p> : null}
+            {notificationsError ? <p className="text-sm text-error">{notificationsError}</p> : null}
+            {!notificationsLoading && !notificationsError && notifications.length === 0 ? (
+              <p className="text-sm text-on-surface-variant">{t("notifications_empty")}</p>
+            ) : null}
+            {!notificationsLoading && !notificationsError && notifications.length > 0 ? (
+              <div className="max-h-[24rem] space-y-2 overflow-y-auto pr-1">
+                {notifications.map((notification) => (
+                  <button
+                    key={notification.id}
+                    type="button"
+                    className="w-full rounded-xl border border-outline-variant/15 bg-surface-container-low p-3 text-left transition-colors hover:bg-surface-container-high"
+                    onClick={() => handleNotificationClick(notification)}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="font-semibold text-on-surface">{notification.title}</p>
+                      {!notification.read_at && <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full bg-error" />}
+                    </div>
+                    <p className="mt-1 text-sm text-on-surface-variant">{notification.body}</p>
+                    {notification.created_at ? (
+                      <p className="mt-2 text-[11px] uppercase tracking-wide text-on-surface-variant/80">
+                        {formatNotificationTime(notification.created_at)}
+                      </p>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </section>
+        </>
+      )}
 
       {menuOpen && (
         <button

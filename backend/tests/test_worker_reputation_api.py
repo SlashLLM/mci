@@ -65,9 +65,10 @@ def reputation_setup():
                 skills=[],
                 certifications=[],
                 availability={},
-                tier=WorkerTier.standard,
+                tier=WorkerTier.probation,
                 status=WorkerStatus.active,
                 rating_avg=4.5,
+                points=-5,
             )
             s.add(wp)
             await s.flush()
@@ -137,7 +138,8 @@ def test_worker_reputation_endpoint(reputation_setup):
     assert r.status_code == 200, r.text
     data = r.json()
     assert data["rating_avg"] == 4.5
-    assert data["tier"] == "standard"
+    assert data["points"] == -5
+    assert data["tier"] == "probation"
     assert len(data["ratings"]) == 1
     assert data["ratings"][0]["stars"] == 5
     assert data["ratings"][0]["comment"] == "Great"

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { QRCodeSVG } from "qrcode.react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
@@ -6,36 +6,53 @@ import { api } from "../../api";
 import { CertificationMultiPicker } from "../certifications/CertificationMultiPicker";
 import { SkillMultiPicker } from "../skills/SkillMultiPicker";
 import { JobStatusBadge } from "./jobOrderStatus";
+import { MatchWeightFields, type MatchWeightConfig } from "./MatchWeightFields";
 
 function ShiftAttendanceQrBlock({
   jobId,
   shift,
   portal,
+  allowRegenerate,
 }: {
   jobId: number;
   shift: { id: number; starts_at: string; ends_at: string };
   portal: boolean;
+  allowRegenerate: boolean;
 }) {
   const { t } = useTranslation();
   const [data, setData] = useState<{ clock_in_token: string; clock_out_token: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const requestIdRef = useRef(0);
+
+  const loadTokens = useCallback(
+    async (clearExisting: boolean) => {
+      const requestId = ++requestIdRef.current;
+      setErr(null);
+      setLoading(true);
+      if (clearExisting) setData(null);
+      try {
+        const next = await api<{ clock_in_token: string; clock_out_token: string }>(
+          `/client/job-orders/${jobId}/shifts/${shift.id}/attendance-qr`,
+        );
+        if (requestIdRef.current === requestId) setData(next);
+      } catch (e) {
+        if (requestIdRef.current !== requestId) return;
+        setErr(String(e));
+        if (clearExisting) setData(null);
+      } finally {
+        if (requestIdRef.current === requestId) setLoading(false);
+      }
+    },
+    [jobId, shift.id],
+  );
+
   useEffect(() => {
-    let cancelled = false;
-    setErr(null);
-    setData(null);
-    api<{ clock_in_token: string; clock_out_token: string }>(
-      `/client/job-orders/${jobId}/shifts/${shift.id}/attendance-qr`,
-    )
-      .then((d) => {
-        if (!cancelled) setData(d);
-      })
-      .catch((e) => {
-        if (!cancelled) setErr(String(e));
-      });
+    void loadTokens(true);
     return () => {
-      cancelled = true;
+      requestIdRef.current += 1;
     };
-  }, [jobId, shift.id]);
+  }, [loadTokens]);
   const labelIn = portal ? "text-xs font-semibold text-on-surface mb-1" : "text-xs font-semibold text-slate-200 mb-1";
   const hint = portal ? "text-[11px] text-on-surface-variant mt-2" : "text-[11px] text-slate-500 mt-2";
   return (
@@ -46,6 +63,18 @@ function ShiftAttendanceQrBlock({
           : "mt-3 grid gap-4 sm:grid-cols-2 border-t border-slate-700/50 pt-3"
       }
     >
+      {allowRegenerate && (
+        <div className="sm:col-span-2 flex justify-end">
+          <button
+            type="button"
+            className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-semibold text-primary hover:bg-surface-container-high disabled:cursor-not-allowed disabled:opacity-60"
+            onClick={() => void loadTokens(false)}
+            disabled={loading}
+          >
+            {loading ? t("job_detail_qr_regenerating") : t("job_detail_qr_regenerate")}
+          </button>
+        </div>
+      )}
       {err && <p className="text-sm text-rose-600 dark:text-rose-400 sm:col-span-2">{err}</p>}
       {!err && !data && <p className={`${hint} sm:col-span-2`}>{t("job_detail_qr_loading")}</p>}
       {data && (
@@ -84,6 +113,8 @@ export type JobOrderDetail = {
   geofence_radius_m: number;
   filled_slots: number;
   total_slots: number;
+  match_weights: MatchWeightConfig;
+  match_weight_overrides: MatchWeightConfig | null;
   hourly_rate: number | null;
   per_shift_rate: number | null;
   required_skills: string[];
@@ -129,6 +160,20 @@ export type JobOrderDetail = {
     assignment_status: string;
     match_score: number | null;
   }[];
+  overlapping_assignments: {
+    current_assignment_id: number;
+    current_shift_id: number;
+    current_shift_starts_at: string;
+    current_shift_ends_at: string;
+    worker_profile_id: number;
+    worker_name: string;
+    overlap_assignment_id: number;
+    overlap_shift_id: number;
+    overlap_shift_starts_at: string;
+    overlap_shift_ends_at: string;
+    overlap_job_id: number;
+    overlap_job_title: string;
+  }[];
   has_ta_payroll?: boolean;
   viewer_can_vet_assignments?: boolean;
 };
@@ -145,6 +190,8 @@ type WorkerProfileDetail = {
   rating_avg: number;
   tier: string;
   status: string;
+  internal_notes?: string | null;
+  follow_up_required?: boolean;
 };
 
 type Variant = "client" | "ta";
@@ -160,7 +207,11 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
   const [profileData, setProfileData] = useState<WorkerProfileDetail | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileErr, setProfileErr] = useState<string | null>(null);
-  const [workerTab, setWorkerTab] = useState<"accepted" | "applied">("accepted");
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [manageStatus, setManageStatus] = useState("active");
+  const [manageNotes, setManageNotes] = useState("");
+  const [manageFollowUp, setManageFollowUp] = useState(false);
+  const [workerTab, setWorkerTab] = useState<"accepted" | "applied" | "overlaps">("accepted");
   const [minRating, setMinRating] = useState("");
   const [preferredFirst, setPreferredFirst] = useState(false);
   const [appliedSince, setAppliedSince] = useState("");
@@ -168,12 +219,16 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
   const [maxDistanceKm, setMaxDistanceKm] = useState("");
   const [skillFilters, setSkillFilters] = useState<string[]>([]);
   const [certFilters, setCertFilters] = useState<string[]>([]);
-  const [appliedSort, setAppliedSort] = useState<"newest" | "oldest">("newest");
+  const [appliedSort, setAppliedSort] = useState<"match" | "newest" | "oldest">("match");
+  const [matchWeightsDraft, setMatchWeightsDraft] = useState<MatchWeightConfig | null>(null);
+  const [savingMatchWeights, setSavingMatchWeights] = useState(false);
   /** Light “portal” UI (client + TA). Attendance QR API is client-only; see shift list below. */
   const portal = variant === "client" || variant === "ta";
 
   const normalizeJob = useCallback((j: JobOrderDetail): JobOrderDetail => ({
     ...j,
+    match_weights: j.match_weights,
+    match_weight_overrides: j.match_weight_overrides ?? null,
     accepted_workers: (j.accepted_workers ?? []).map((w) => ({
       ...w,
       worker_skills: w.worker_skills ?? [],
@@ -181,6 +236,7 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
     })),
     declined_workers: j.declined_workers ?? [],
     rejected_workers: j.rejected_workers ?? [],
+    overlapping_assignments: j.overlapping_assignments ?? [],
     has_ta_payroll: j.has_ta_payroll ?? false,
     viewer_can_vet_assignments: j.viewer_can_vet_assignments ?? true,
   }), []);
@@ -198,9 +254,17 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
     let cancelled = false;
     setProfileLoading(true);
     setProfileErr(null);
-    api<WorkerProfileDetail>(`/job-orders/${jobId}/worker-profiles/${profileWorkerId}`)
+    const profilePath =
+      variant === "ta"
+        ? `/workers/${profileWorkerId}/management`
+        : `/job-orders/${jobId}/worker-profiles/${profileWorkerId}`;
+    api<WorkerProfileDetail>(profilePath)
       .then((p) => {
-        if (!cancelled) setProfileData(p);
+        if (cancelled) return;
+        setProfileData(p);
+        setManageStatus(p.status || "active");
+        setManageNotes(p.internal_notes || "");
+        setManageFollowUp(!!p.follow_up_required);
       })
       .catch((e) => {
         if (!cancelled) setProfileErr(String(e));
@@ -211,7 +275,7 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
     return () => {
       cancelled = true;
     };
-  }, [profileWorkerId, jobId]);
+  }, [profileWorkerId, jobId, variant]);
 
   useEffect(() => {
     if (profileWorkerId === null) return;
@@ -251,6 +315,11 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
     setProfileErr(null);
   }, [jobId]);
 
+  useEffect(() => {
+    if (!job) return;
+    setMatchWeightsDraft(job.match_weight_overrides ?? job.match_weights);
+  }, [job]);
+
   const requiredSkillSet = useMemo(() => new Set(job?.required_skills ?? []), [job?.required_skills]);
   const requiredCertSet = useMemo(() => new Set(job?.required_certifications ?? []), [job?.required_certifications]);
 
@@ -284,6 +353,40 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
     }
   }
 
+  async function saveMatchWeights() {
+    if (!jobId || !matchWeightsDraft) return;
+    setSavingMatchWeights(true);
+    setMsg(null);
+    try {
+      const next = await api<JobOrderDetail>(`/job-orders/${jobId}/match-weights`, {
+        method: "PATCH",
+        json: { match_weights: matchWeightsDraft },
+      });
+      setJob(normalizeJob(next));
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setSavingMatchWeights(false);
+    }
+  }
+
+  async function resetMatchWeights() {
+    if (!jobId) return;
+    setSavingMatchWeights(true);
+    setMsg(null);
+    try {
+      const next = await api<JobOrderDetail>(`/job-orders/${jobId}/match-weights`, {
+        method: "PATCH",
+        json: { match_weights: null },
+      });
+      setJob(normalizeJob(next));
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setSavingMatchWeights(false);
+    }
+  }
+
   async function promoteAssignment(assignmentId: number) {
     setActionBusy(assignmentId);
     setMsg(null);
@@ -297,11 +400,14 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
     }
   }
 
-  async function rejectAssignment(assignmentId: number) {
+  async function rejectAssignment(assignmentId: number, reason?: "schedule_conflict") {
     setActionBusy(assignmentId);
     setMsg(null);
     try {
-      await api(`/job-orders/assignments/${assignmentId}/reject`, { method: "POST" });
+      await api(`/job-orders/assignments/${assignmentId}/reject`, {
+        method: "POST",
+        json: reason ? { reason } : undefined,
+      });
       load();
     } catch (e) {
       setMsg(String(e));
@@ -388,6 +494,10 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
 
   const acceptedWorkers = job.accepted_workers.filter((w) => w.assignment_status === "confirmed");
   const appliedWorkers = job.accepted_workers.filter((w) => w.assignment_status !== "confirmed");
+  const hasWeightOverride = job.match_weight_overrides != null;
+  const matchWeightsDirty =
+    matchWeightsDraft != null &&
+    JSON.stringify(matchWeightsDraft) !== JSON.stringify(job.match_weight_overrides ?? job.match_weights);
   const filteredAppliedWorkers = appliedWorkers
     .filter((w) => {
       const ratingPass = minRating ? (w.rating_avg || 0) >= Number(minRating) : true;
@@ -415,15 +525,62 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
         const pref = Number(!!b.is_preferred) - Number(!!a.is_preferred);
         if (pref !== 0) return pref;
       }
+      if (appliedSort === "match") {
+        const scoreDiff = (b.match_score ?? -1) - (a.match_score ?? -1);
+        if (scoreDiff !== 0) return scoreDiff;
+      }
       const ad = a.applied_at ? new Date(a.applied_at).getTime() : 0;
       const bd = b.applied_at ? new Date(b.applied_at).getTime() : 0;
       return appliedSort === "newest" ? bd - ad : ad - bd;
     });
+  const overlappingAssignments = job.overlapping_assignments ?? [];
+  const selectedWorkerCount =
+    workerTab === "accepted"
+      ? acceptedWorkers.length
+      : workerTab === "applied"
+        ? filteredAppliedWorkers.length
+        : overlappingAssignments.length;
+  const selectedWorkerEmptyKey =
+    workerTab === "accepted"
+      ? "job_detail_no_accepted_yet"
+      : workerTab === "applied"
+        ? "job_detail_no_applied_workers"
+        : "job_detail_no_overlapping_assignments";
 
   function closeProfileModal() {
     setProfileWorkerId(null);
     setProfileData(null);
     setProfileErr(null);
+  }
+
+  async function saveWorkerManagement() {
+    if (variant !== "ta" || profileWorkerId == null) return;
+    setProfileSaving(true);
+    setProfileErr(null);
+    try {
+      const updated = await api<WorkerProfileDetail>(`/workers/${profileWorkerId}/management`, {
+        method: "PATCH",
+        json: {
+          status: manageStatus,
+          internal_notes: manageNotes,
+          follow_up_required: manageFollowUp,
+        },
+      });
+      setProfileData(updated);
+      setManageStatus(updated.status || "active");
+      setManageNotes(updated.internal_notes || "");
+      setManageFollowUp(!!updated.follow_up_required);
+      load();
+    } catch (e) {
+      setProfileErr(String(e));
+    } finally {
+      setProfileSaving(false);
+    }
+  }
+
+  async function removeOverlapAssignment(assignmentId: number) {
+    if (!window.confirm(t("job_detail_overlap_remove_confirm"))) return;
+    await rejectAssignment(assignmentId, "schedule_conflict");
   }
 
   return (
@@ -508,6 +665,41 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
             </div>
           </div>
 
+          <div className="rounded-2xl border border-outline-variant/20 p-6">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-on-surface">{t("job_match_weights_title")}</h3>
+                <p className="mt-1 text-xs text-on-surface-variant">
+                  {hasWeightOverride ? t("job_match_weights_override_active") : t("job_match_weights_using_defaults")}
+                </p>
+              </div>
+              <span className="rounded-full border border-outline-variant/30 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">
+                {hasWeightOverride ? t("job_match_weights_override_badge") : t("job_match_weights_default_badge")}
+              </span>
+            </div>
+            {matchWeightsDraft && <MatchWeightFields t={t} value={matchWeightsDraft} onChange={setMatchWeightsDraft} disabled={!showEmployerActions || savingMatchWeights} />}
+            {showEmployerActions && (
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="rounded-md border border-outline-variant/40 bg-transparent px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container disabled:opacity-50"
+                  onClick={saveMatchWeights}
+                  disabled={!matchWeightsDirty || savingMatchWeights}
+                >
+                  {savingMatchWeights ? t("job_match_weights_saving") : t("job_match_weights_save")}
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md border border-outline-variant/40 bg-transparent px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container disabled:opacity-50"
+                  onClick={resetMatchWeights}
+                  disabled={!hasWeightOverride || savingMatchWeights}
+                >
+                  {t("job_match_weights_reset")}
+                </button>
+              </div>
+            )}
+          </div>
+
           <div id="job-detail-shifts" className="scroll-mt-24 rounded-2xl border border-outline-variant/20 p-6">
             <h3 className="mb-4 text-xs font-black uppercase tracking-[0.2em] text-on-surface-variant">{t("job_form_shifts")}</h3>
             <div className="space-y-4">
@@ -518,7 +710,7 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
                     {new Date(s.starts_at).toLocaleString()} → {new Date(s.ends_at).toLocaleString()}
                   </p>
                   <p className="text-xs text-on-tertiary-container mt-1">· {s.workers_required} {t("job_form_workers")}</p>
-                  <ShiftAttendanceQrBlock jobId={job.id} shift={s} portal={portal} />
+                  <ShiftAttendanceQrBlock jobId={job.id} shift={s} portal={portal} allowRegenerate={variant === "client"} />
                 </div>
               ))}
             </div>
@@ -528,8 +720,8 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
         <section className="col-span-12 lg:col-span-8 space-y-6">
           <div className="rounded-2xl border border-outline-variant/20 p-6">
             <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-on-surface">{t("job_detail_accepted_workers")}</h3>
-              <p className="text-xs text-on-surface-variant">{workerTab === "accepted" ? acceptedWorkers.length : filteredAppliedWorkers.length}</p>
+              <h3 className="text-sm font-semibold text-on-surface">{t("job_detail_workers_heading")}</h3>
+              <p className="text-xs text-on-surface-variant">{selectedWorkerCount}</p>
             </div>
             <div className="mb-4 flex flex-wrap gap-2">
               <button
@@ -537,15 +729,24 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
                 className={`rounded-md px-3 py-1 text-xs font-medium border ${workerTab === "accepted" ? "bg-surface-container border-outline-variant/40 text-on-surface" : "border-outline-variant/30 text-on-surface-variant"}`}
                 onClick={() => setWorkerTab("accepted")}
               >
-                Accepted
+                {t("job_detail_accepted_workers")}
               </button>
               <button
                 type="button"
                 className={`rounded-md px-3 py-1 text-xs font-medium border ${workerTab === "applied" ? "bg-surface-container border-outline-variant/40 text-on-surface" : "border-outline-variant/30 text-on-surface-variant"}`}
                 onClick={() => setWorkerTab("applied")}
               >
-                Applied
+                {t("job_detail_applied_workers")}
               </button>
+              {showEmployerActions && (
+                <button
+                  type="button"
+                  className={`rounded-md px-3 py-1 text-xs font-medium border ${workerTab === "overlaps" ? "bg-surface-container border-outline-variant/40 text-on-surface" : "border-outline-variant/30 text-on-surface-variant"}`}
+                  onClick={() => setWorkerTab("overlaps")}
+                >
+                  {t("job_detail_overlapping_shifts_tab")}
+                </button>
+              )}
             </div>
 
             {workerTab === "applied" && (
@@ -585,10 +786,11 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
                 <select
                   className="rounded-md border border-outline-variant/30 px-2 py-1.5 text-xs"
                   value={appliedSort}
-                  onChange={(e) => setAppliedSort(e.target.value as "newest" | "oldest")}
+                  onChange={(e) => setAppliedSort(e.target.value as "match" | "newest" | "oldest")}
                 >
-                  <option value="newest">Date applied: newest</option>
-                  <option value="oldest">Date applied: oldest</option>
+                  <option value="match">{t("job_detail_sort_match")}</option>
+                  <option value="newest">{t("job_detail_sort_newest")}</option>
+                  <option value="oldest">{t("job_detail_sort_oldest")}</option>
                 </select>
                 <label className="flex items-center gap-2 text-xs text-on-surface-variant">
                   <input type="checkbox" checked={preferredFirst} onChange={(e) => setPreferredFirst(e.target.checked)} />
@@ -641,8 +843,43 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
               </div>
             )}
 
-            {(workerTab === "accepted" ? acceptedWorkers : filteredAppliedWorkers).length === 0 ? (
-              <p className={emptyRoster}>{t("job_detail_no_accepted_yet")}</p>
+            {selectedWorkerCount === 0 ? (
+              <p className={emptyRoster}>{t(selectedWorkerEmptyKey)}</p>
+            ) : workerTab === "overlaps" ? (
+              <ul className="divide-y divide-outline-variant/25">
+                {overlappingAssignments.map((overlap) => (
+                  <li key={`${overlap.current_assignment_id}-${overlap.overlap_assignment_id}`} className="py-3 flex flex-wrap items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={rosterName}>{overlap.worker_name}</span>
+                        <span className={assignmentBadgeClass("confirmed")}>{assignmentLabel("confirmed")}</span>
+                        <span className="text-[10px] rounded-full border border-rose-300/60 px-2 py-0.5 font-bold uppercase tracking-wide text-rose-700">
+                          {t("job_detail_overlap_badge")}
+                        </span>
+                      </div>
+                      <p className="text-xs text-on-surface-variant mt-1">
+                        {t("job_detail_overlap_current_shift")}: {new Date(overlap.current_shift_starts_at).toLocaleString()} → {new Date(overlap.current_shift_ends_at).toLocaleString()}
+                      </p>
+                      <p className="text-[11px] text-on-surface-variant mt-1">
+                        {t("job_detail_overlap_other_shift")}: {overlap.overlap_job_title} #{overlap.overlap_job_id} · {new Date(overlap.overlap_shift_starts_at).toLocaleString()} → {new Date(overlap.overlap_shift_ends_at).toLocaleString()}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        className={rosterDangerBtn}
+                        disabled={actionBusy === overlap.current_assignment_id}
+                        onClick={() => removeOverlapAssignment(overlap.current_assignment_id)}
+                      >
+                        {t("job_detail_overlap_remove_from_job")}
+                      </button>
+                      <button type="button" className={profileLinkBtn} onClick={() => setProfileWorkerId(overlap.worker_profile_id)}>
+                        {t("job_detail_view_profile")}
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
             ) : (
               <ul className="divide-y divide-outline-variant/25">
                 {(workerTab === "accepted" ? acceptedWorkers : filteredAppliedWorkers).map((w) => (
@@ -657,7 +894,9 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
                         {new Date(w.shift_starts_at).toLocaleString()} → {new Date(w.shift_ends_at).toLocaleString()}
                       </p>
                       <p className="text-[11px] text-on-surface-variant mt-1">
-                        Rating {Number(w.rating_avg || 0).toFixed(1)} · Certs {w.certifications_count}
+                        Rating {Number(w.rating_avg || 0).toFixed(1)}
+                        {w.match_score != null ? ` · ${t("job_detail_match_score_short")} ${Number(w.match_score).toFixed(2)}` : ""}
+                        · Certs {w.certifications_count}
                         {w.applied_at ? ` · Applied ${new Date(w.applied_at).toLocaleString()}` : ""}
                       </p>
                       {(w.worker_skills?.length ?? 0) > 0 && (
@@ -824,8 +1063,60 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
                 </div>
                 <div>
                   <dt className="text-on-surface-variant">{t("job_detail_profile_status")}</dt>
-                  <dd>{profileData.status}</dd>
+                  {variant === "ta" ? (
+                    <dd>
+                      <select
+                        className="mt-1 w-full rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm"
+                        value={manageStatus}
+                        onChange={(e) => setManageStatus(e.target.value)}
+                      >
+                        <option value="active">{t("worker_status_active")}</option>
+                        <option value="inactive">{t("worker_status_inactive")}</option>
+                        <option value="blacklisted">{t("worker_status_blacklisted")}</option>
+                      </select>
+                    </dd>
+                  ) : (
+                    <dd>{profileData.status}</dd>
+                  )}
                 </div>
+                {variant === "ta" && (
+                  <>
+                    <div>
+                      <dt className="text-on-surface-variant">{t("ta_worker_follow_up")}</dt>
+                      <dd className="mt-1">
+                        <label className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={manageFollowUp}
+                            onChange={(e) => setManageFollowUp(e.target.checked)}
+                          />
+                          <span>{t("ta_worker_follow_up_required")}</span>
+                        </label>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-on-surface-variant">{t("ta_worker_internal_notes")}</dt>
+                      <dd className="mt-1">
+                        <textarea
+                          className="min-h-24 w-full rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm"
+                          value={manageNotes}
+                          onChange={(e) => setManageNotes(e.target.value)}
+                          placeholder={t("ta_worker_internal_notes_ph")}
+                        />
+                      </dd>
+                    </div>
+                    <div>
+                      <button
+                        type="button"
+                        className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-on-primary disabled:opacity-50"
+                        disabled={profileSaving}
+                        onClick={() => void saveWorkerManagement()}
+                      >
+                        {profileSaving ? t("job_match_weights_saving") : t("ta_worker_save")}
+                      </button>
+                    </div>
+                  </>
+                )}
                 <div>
                   <dt className="text-on-surface-variant">{t("job_detail_profile_languages")}</dt>
                   <dd>{profileData.languages?.length ? profileData.languages.join(", ") : "—"}</dd>

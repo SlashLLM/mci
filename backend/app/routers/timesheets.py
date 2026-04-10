@@ -20,6 +20,7 @@ from app.models import (
     WorkerProfile,
 )
 from app.services.audit import log_audit
+from app.services.notifications import notify_user
 from app.services.ta_client_contracts import (
     get_active_contract_for_org,
     list_contracted_org_ids_for_ta,
@@ -38,6 +39,15 @@ class DisputeBody(BaseModel):
 class EmployerEndorseBody(BaseModel):
     stars: int = Field(..., ge=1, le=5)
     prefer_worker: bool
+
+
+DISPUTABLE_STATUSES = {
+    TimesheetStatus.pending,
+    TimesheetStatus.employer_endorsed,
+    TimesheetStatus.ta_verified,
+    TimesheetStatus.client_payroll_released,
+    TimesheetStatus.disputed,
+}
 
 
 def _timesheet_row(
@@ -171,23 +181,49 @@ async def dispute_timesheet(
     t = await db.get(TimesheetEntry, entry_id)
     if not t:
         raise HTTPException(404)
+    note = body.note.strip()
+    if not note:
+        raise HTTPException(400, detail="Dispute comment is required")
+    if t.status not in DISPUTABLE_STATUSES:
+        raise HTTPException(400, detail="Timesheet can no longer be disputed")
+    job = await db.get(JobOrder, t.job_order_id)
+    if not job:
+        raise HTTPException(404)
     if user.role == UserRole.client:
-        job = await db.get(JobOrder, t.job_order_id)
         if job.client_org_id != user.client_org_id:
             raise HTTPException(403)
     elif user.role == UserRole.ta:
-        job = await db.get(JobOrder, t.job_order_id)
         if not await ta_has_active_contract_with_org(db, user.id, job.client_org_id):
             raise HTTPException(403)
+    old_status = t.status.value
+    t.status = TimesheetStatus.disputed
     t.dispute_flag = True
-    t.dispute_note = body.note
+    t.dispute_note = note
+    worker = await db.get(WorkerProfile, t.worker_id)
+    if worker and worker.user_id:
+        actor_label = user.display_name or user.username or user.phone or user.role.value.upper()
+        await notify_user(
+            db,
+            worker.user_id,
+            title="Timesheet disputed",
+            body=f"{actor_label} flagged timesheet #{t.id} for {job.title}: {note}",
+            payload={
+                "type": "timesheet_disputed",
+                "timesheet_entry_id": t.id,
+                "job_order_id": t.job_order_id,
+                "shift_id": t.shift_id,
+                "comment": note,
+                "status": t.status.value,
+            },
+        )
     await log_audit(
         db,
         actor_user_id=user.id,
         action="timesheet_dispute",
         entity_type="TimesheetEntry",
         entity_id=str(entry_id),
-        new_values={"note": body.note},
+        old_values={"status": old_status},
+        new_values={"status": t.status.value, "note": note},
     )
     return {"ok": True}
 

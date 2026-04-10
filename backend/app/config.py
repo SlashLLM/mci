@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     otp_dev_code: str = "123456"
 
     access_token_expire_minutes: int = 60 * 24 * 7
+    shift_attendance_change_cutoff_hours: int = 4
 
     max_upload_bytes: int = 15 * 1024 * 1024  # override via MAX_UPLOAD_BYTES
 

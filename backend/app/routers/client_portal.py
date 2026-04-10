@@ -114,6 +114,19 @@ async def _ensure_client_profile(db: AsyncSession, user: User) -> ClientProfile:
     return cp
 
 
+async def _sync_client_org_name_from_profile(db: AsyncSession, user: User, cp: ClientProfile) -> None:
+    """Keep ClientOrganization.name aligned with profile company name for TA/worker-facing labels."""
+    if not user.client_org_id:
+        return
+    desired = (cp.company_name or "").strip()
+    if not desired:
+        return
+    org = await db.get(ClientOrganization, user.client_org_id)
+    if not org or org.name == desired:
+        return
+    org.name = desired
+
+
 @router.get("/me/profile", response_model=ClientProfileOut)
 async def get_my_client_profile(
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -121,6 +134,7 @@ async def get_my_client_profile(
 ):
     cp = await _ensure_client_profile(db, user)
     cp.profile_completeness_pct = _client_profile_completeness(cp)
+    await _sync_client_org_name_from_profile(db, user, cp)
     await db.flush()
     return _client_profile_out(cp)
 
@@ -132,7 +146,8 @@ async def update_my_client_profile(
     user: Annotated[User, Depends(require_roles(UserRole.client))],
 ):
     cp = await _ensure_client_profile(db, user)
-    cp.company_name = body.company_name or cp.company_name
+    # Always take submitted company name (onboarding + profile page send full payload).
+    cp.company_name = (body.company_name or "").strip()
     cp.contact_name = body.contact_name or cp.contact_name
     cp.contact_email = (body.contact_email.strip().lower() if body.contact_email else None) or cp.contact_email
     cp.contact_phone = (body.contact_phone.strip() if body.contact_phone else None) or cp.contact_phone
@@ -145,6 +160,7 @@ async def update_my_client_profile(
     if body.location_lng is not None:
         cp.location_lng = body.location_lng
     cp.profile_completeness_pct = _client_profile_completeness(cp)
+    await _sync_client_org_name_from_profile(db, user, cp)
     await db.flush()
     return _client_profile_out(cp)
 
@@ -176,6 +192,7 @@ async def client_onboarding_complete(
         cp.pdpa_consent_at = now
     cp.onboarding_completed_at = now
     cp.profile_completeness_pct = _client_profile_completeness(cp)
+    await _sync_client_org_name_from_profile(db, user, cp)
     await db.flush()
     return {"ok": True, "profile_completeness_pct": cp.profile_completeness_pct}
 

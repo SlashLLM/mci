@@ -41,6 +41,87 @@ function truncate(s: string, n: number) {
   return `${s.slice(0, n - 1)}…`;
 }
 
+function ActiveJobCard({ job, onOpen, t }: { job: JobRow; onOpen: (jobId: number) => void; t: (key: string) => string }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(job.id)}
+      className="text-left bg-surface-container-lowest p-6 rounded-3xl group hover:bg-white dark:hover:bg-slate-800 transition-all duration-300 border border-transparent hover:shadow-[0_10px_40px_rgba(43,52,55,0.08)] flex flex-col justify-between min-h-[18rem] relative overflow-hidden"
+    >
+      <div className="absolute top-0 right-0 w-32 h-32 bg-primary/5 rounded-full -mr-16 -mt-16 group-hover:scale-110 transition-transform duration-500 pointer-events-none" />
+      <div>
+        <div className="flex justify-between items-start mb-6">
+          <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest ${jobCardStatusStyle(job.status)}`}>
+            {t(jobStatusLabelKey(job.status))}
+          </span>
+          <span className="text-on-surface-variant opacity-40 group-hover:opacity-70">
+            <span className="material-symbols-outlined">arrow_forward</span>
+          </span>
+        </div>
+        <h3 className="font-headline text-xl md:text-2xl font-extrabold text-on-surface leading-tight mb-2 group-hover:text-primary transition-colors">
+          {job.title}
+        </h3>
+        <div className="flex flex-col gap-2 text-on-surface-variant">
+          <div className="flex items-center gap-1.5">
+            <span className="material-symbols-outlined text-sm">location_on</span>
+            <span className="text-xs font-medium">{truncate(job.location_address, 42)}</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="material-symbols-outlined text-sm">calendar_today</span>
+            <span className="text-xs font-medium">{t("job_card_schedule_detail")}</span>
+          </div>
+        </div>
+      </div>
+      <div className="flex items-end justify-between mt-8">
+        <div>
+          <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest mb-1">{job.job_type}</p>
+          <div className="flex items-center gap-2">
+            <span className="text-2xl font-bold text-primary">{job.filled_slots}</span>
+            <span className="text-lg text-outline-variant font-medium">/ {job.total_slots} {t("job_detail_fill_short")}</span>
+          </div>
+        </div>
+        <div className="w-12 h-12 rounded-full bg-surface-container flex items-center justify-center text-primary group-hover:bg-primary group-hover:text-white transition-all duration-300">
+          <span className="material-symbols-outlined">arrow_forward</span>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function JobHistoryList({ rows, onOpen, t }: { rows: JobRow[]; onOpen: (jobId: number) => void; t: (key: string) => string }) {
+  if (rows.length === 0) {
+    return <p className="text-sm text-on-surface-variant">{t("client_job_history_empty")}</p>;
+  }
+  return (
+    <div className="space-y-3">
+      {rows.map((j) => (
+        <button
+          key={j.id}
+          type="button"
+          onClick={() => onOpen(j.id)}
+          className="w-full rounded-2xl border border-outline-variant/20 bg-surface p-4 text-left transition-colors hover:bg-surface-container"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="font-semibold text-on-surface truncate">{j.title}</p>
+              <p className="mt-1 text-xs text-on-surface-variant">{j.job_type}</p>
+            </div>
+            <span className={`shrink-0 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest ${jobCardStatusStyle(j.status)}`}>
+              {t(jobStatusLabelKey(j.status))}
+            </span>
+          </div>
+          <div className="mt-3 flex items-center justify-between gap-3 text-xs text-on-surface-variant">
+            <span className="truncate">{truncate(j.location_address, 28)}</span>
+            <span>
+              {j.filled_slots}/{j.total_slots} {t("job_detail_fill_short")}
+            </span>
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function ClientLayout() {
   return <ClientPortalLayout />;
 }
@@ -52,6 +133,10 @@ export function ClientJobsList() {
   useEffect(() => {
     api<JobRow[]>("/job-orders").then(setRows);
   }, []);
+  const activeRows = useMemo(
+    () => rows.filter((j) => j.status !== "completed" && j.status !== "cancelled"),
+    [rows],
+  );
 
   return (
     <>
@@ -83,69 +168,71 @@ export function ClientJobsList() {
         </div>
       </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {rows.map((j) => (
-          <button
-            key={j.id}
-            type="button"
-            onClick={() => nav(`/client/${j.id}`)}
-            className="text-left bg-surface-container-lowest p-6 rounded-3xl group hover:bg-white dark:hover:bg-slate-800 transition-all duration-300 border border-transparent hover:shadow-[0_10px_40px_rgba(43,52,55,0.08)] flex flex-col justify-between min-h-[18rem] relative overflow-hidden"
-          >
-            <div className="absolute top-0 right-0 w-32 h-32 bg-primary/5 rounded-full -mr-16 -mt-16 group-hover:scale-110 transition-transform duration-500 pointer-events-none" />
-            <div>
-              <div className="flex justify-between items-start mb-6">
-                <span
-                  className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest ${jobCardStatusStyle(j.status)}`}
-                >
-                  {t(jobStatusLabelKey(j.status))}
-                </span>
-                <span className="text-on-surface-variant opacity-40 group-hover:opacity-70">
-                  <span className="material-symbols-outlined">arrow_forward</span>
-                </span>
-              </div>
-              <h3 className="font-headline text-xl md:text-2xl font-extrabold text-on-surface leading-tight mb-2 group-hover:text-primary transition-colors">
-                {j.title}
-              </h3>
-              <div className="flex flex-col gap-2 text-on-surface-variant">
-                <div className="flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-sm">location_on</span>
-                  <span className="text-xs font-medium">{truncate(j.location_address, 42)}</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-sm">calendar_today</span>
-                  <span className="text-xs font-medium">{t("job_card_schedule_detail")}</span>
-                </div>
-              </div>
-            </div>
-            <div className="flex items-end justify-between mt-8">
-              <div>
-                <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest mb-1">{j.job_type}</p>
-                <div className="flex items-center gap-2">
-                  <span className="text-2xl font-bold text-primary">{j.filled_slots}</span>
-                  <span className="text-lg text-outline-variant font-medium">/ {j.total_slots} {t("job_detail_fill_short")}</span>
-                </div>
-              </div>
-              <div className="w-12 h-12 rounded-full bg-surface-container flex items-center justify-center text-primary group-hover:bg-primary group-hover:text-white transition-all duration-300">
-                <span className="material-symbols-outlined">arrow_forward</span>
-              </div>
-            </div>
-          </button>
-        ))}
-
-        <NavLink
-          to="/client/new"
-          className="border-2 border-dashed border-outline-variant/40 p-6 rounded-3xl group hover:border-primary/50 transition-all duration-300 flex flex-col items-center justify-center min-h-[18rem] text-center"
-        >
-          <div className="w-16 h-16 rounded-full bg-surface-container flex items-center justify-center text-outline-variant group-hover:bg-primary group-hover:text-white transition-all duration-500 mb-4">
-            <span className="material-symbols-outlined text-3xl">add_circle</span>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-bold text-on-surface">{t("client_active_jobs_heading")}</h2>
+            <p className="text-sm text-on-surface-variant">{t("client_active_jobs_subtitle")}</p>
           </div>
-          <h3 className="font-headline text-xl font-bold text-on-surface-variant group-hover:text-on-surface transition-colors">
-            {t("job_form_new")}
-          </h3>
-          <p className="text-outline text-sm mt-1">{t("client_create_job_hint")}</p>
-        </NavLink>
+          <span className="rounded-full bg-surface-container px-3 py-1 text-xs font-semibold text-on-surface">{activeRows.length}</span>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+          {activeRows.map((j) => (
+            <ActiveJobCard key={j.id} job={j} onOpen={(jobId) => nav(`/client/${jobId}`)} t={t} />
+          ))}
+
+          {activeRows.length === 0 && (
+            <div className="rounded-3xl border border-outline-variant/25 bg-surface-container-lowest p-6 text-sm text-on-surface-variant md:col-span-2 xl:col-span-2">
+              {t("client_active_jobs_empty")}
+            </div>
+          )}
+
+          <NavLink
+            to="/client/new"
+            className="border-2 border-dashed border-outline-variant/40 p-6 rounded-3xl group hover:border-primary/50 transition-all duration-300 flex flex-col items-center justify-center min-h-[18rem] text-center"
+          >
+            <div className="w-16 h-16 rounded-full bg-surface-container flex items-center justify-center text-outline-variant group-hover:bg-primary group-hover:text-white transition-all duration-500 mb-4">
+              <span className="material-symbols-outlined text-3xl">add_circle</span>
+            </div>
+            <h3 className="font-headline text-xl font-bold text-on-surface-variant group-hover:text-on-surface transition-colors">
+              {t("job_form_new")}
+            </h3>
+            <p className="text-outline text-sm mt-1">{t("client_create_job_hint")}</p>
+          </NavLink>
+        </div>
       </div>
     </>
+  );
+}
+
+export function ClientJobHistoryPage() {
+  const { t } = useTranslation();
+  const nav = useNavigate();
+  const [rows, setRows] = useState<JobRow[]>([]);
+  useEffect(() => {
+    api<JobRow[]>("/job-orders").then(setRows);
+  }, []);
+  const historyRows = useMemo(
+    () => rows.filter((j) => j.status === "completed" || j.status === "cancelled").sort((a, b) => b.id - a.id),
+    [rows],
+  );
+
+  return (
+    <div className="space-y-6">
+      <header className="flex items-end justify-between gap-4">
+        <div>
+          <h1 className="font-headline text-3xl md:text-4xl font-extrabold text-on-surface tracking-tight mb-2">
+            {t("client_job_history_heading")}
+          </h1>
+          <p className="text-on-surface-variant text-sm md:text-base">{t("client_job_history_subtitle")}</p>
+        </div>
+        <span className="rounded-full bg-surface-container px-3 py-1 text-xs font-semibold text-on-surface">{historyRows.length}</span>
+      </header>
+
+      <div className="rounded-3xl border border-outline-variant/20 bg-surface-container-lowest p-5">
+        <JobHistoryList rows={historyRows} onOpen={(jobId) => nav(`/client/${jobId}`)} t={t} />
+      </div>
+    </div>
   );
 }
 
@@ -180,6 +267,8 @@ type ClientTimesheetRow = {
   shift_date?: string | null;
   clock_in_at?: string | null;
   clock_out_at?: string | null;
+  dispute_flag?: boolean;
+  dispute_note?: string | null;
 };
 
 function fmtTsIso(iso: string | undefined | null): string {
@@ -189,6 +278,35 @@ function fmtTsIso(iso: string | undefined | null): string {
   } catch {
     return iso;
   }
+}
+
+function formatTimesheetStatus(status: string): string {
+  return status.replace(/_/g, " ");
+}
+
+function timesheetStatusBadgeClass(status: string): string {
+  switch (status) {
+    case "disputed":
+      return "bg-error-container/30 text-on-error-container";
+    case "payment_released":
+    case "client_payroll_released":
+      return "bg-secondary-container text-on-secondary-container";
+    case "ta_verified":
+    case "employer_endorsed":
+      return "bg-primary-container text-on-primary-container";
+    default:
+      return "bg-surface-container-high text-on-surface";
+  }
+}
+
+function canDisputeTimesheet(status: string): boolean {
+  return (
+    status === "pending" ||
+    status === "employer_endorsed" ||
+    status === "ta_verified" ||
+    status === "client_payroll_released" ||
+    status === "disputed"
+  );
 }
 
 type ClientContractContext = {
@@ -230,6 +348,9 @@ export function ClientTimesheetsPage() {
   const [endorseStars, setEndorseStars] = useState(5);
   const [endorsePrefer, setEndorsePrefer] = useState(true);
   const [endorseErr, setEndorseErr] = useState<string | null>(null);
+  const [disputeTarget, setDisputeTarget] = useState<ClientTimesheetRow | null>(null);
+  const [disputeNote, setDisputeNote] = useState("");
+  const [disputeErr, setDisputeErr] = useState<string | null>(null);
   const [payrollErr, setPayrollErr] = useState<string | null>(null);
 
   async function reload() {
@@ -288,6 +409,12 @@ export function ClientTimesheetsPage() {
     setEndorseTarget(x);
   }
 
+  function openDispute(x: ClientTimesheetRow) {
+    setDisputeErr(null);
+    setDisputeNote(x.dispute_note?.trim() || "");
+    setDisputeTarget(x);
+  }
+
   async function submitEndorse() {
     if (!endorseTarget) return;
     setEndorseErr(null);
@@ -300,6 +427,27 @@ export function ClientTimesheetsPage() {
       await reload();
     } catch (e) {
       setEndorseErr(String(e));
+    }
+  }
+
+  async function submitDispute() {
+    if (!disputeTarget) return;
+    const note = disputeNote.trim();
+    if (!note) {
+      setDisputeErr(t("timesheet_dispute_comment_required"));
+      return;
+    }
+    setDisputeErr(null);
+    try {
+      await api(`/timesheets/${disputeTarget.id}/dispute`, {
+        method: "POST",
+        json: { note },
+      });
+      setDisputeTarget(null);
+      setDisputeNote("");
+      await reload();
+    } catch (e) {
+      setDisputeErr(String(e));
     }
   }
 
@@ -391,6 +539,54 @@ export function ClientTimesheetsPage() {
                 onClick={() => void submitEndorse()}
               >
                 {t("client_timesheet_endorse_submit")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {disputeTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          role="presentation"
+          onClick={() => setDisputeTarget(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dispute-dialog-title"
+            className="bg-surface-container-lowest border border-outline-variant/25 rounded-2xl shadow-xl max-w-md w-full p-6 text-on-surface"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.key === "Escape" && setDisputeTarget(null)}
+          >
+            <h2 id="dispute-dialog-title" className="font-headline text-lg font-bold mb-2">
+              {t("timesheet_dispute_modal_title")}
+            </h2>
+            <p className="text-sm text-on-surface-variant mb-4">{disputeTarget.worker_name || "—"}</p>
+            <label className="block text-sm font-medium mb-2" htmlFor="client-timesheet-dispute-note">
+              {t("timesheet_dispute_comment_label")}
+            </label>
+            <textarea
+              id="client-timesheet-dispute-note"
+              className="min-h-28 w-full rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm"
+              value={disputeNote}
+              onChange={(e) => setDisputeNote(e.target.value)}
+              placeholder={t("timesheet_dispute_comment_placeholder")}
+            />
+            {disputeErr && <p className="mt-3 text-sm text-error">{disputeErr}</p>}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                className="px-4 py-2 rounded-xl text-sm font-medium border border-outline-variant/30"
+                onClick={() => setDisputeTarget(null)}
+              >
+                {t("client_timesheet_endorse_cancel")}
+              </button>
+              <button
+                type="button"
+                className="px-4 py-2 rounded-xl text-sm font-semibold bg-error text-on-error"
+                onClick={() => void submitDispute()}
+              >
+                {t("timesheet_dispute_submit")}
               </button>
             </div>
           </div>
@@ -510,7 +706,16 @@ export function ClientTimesheetsPage() {
                                 <td className="px-3 py-2 font-semibold">${x.gross_pay.toFixed(2)}</td>
                                 <td className="px-3 py-2 text-on-surface-variant">{fmtTsIso(x.clock_in_at)}</td>
                                 <td className="px-3 py-2 text-on-surface-variant">{fmtTsIso(x.clock_out_at)}</td>
-                                <td className="px-3 py-2 text-on-surface-variant">{x.status}</td>
+                                <td className="px-3 py-2">
+                                  <span
+                                    className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${timesheetStatusBadgeClass(x.status)}`}
+                                  >
+                                    {formatTimesheetStatus(x.status)}
+                                  </span>
+                                  {(x.dispute_flag || (x.dispute_note && x.dispute_note.trim())) && (
+                                    <p className="mt-1 max-w-xs text-xs text-error">{x.dispute_note?.trim() || "—"}</p>
+                                  )}
+                                </td>
                                 <td className="px-3 py-2">
                                   <div className="flex flex-col gap-1 items-start">
                                     {x.status === "pending" && (
@@ -529,6 +734,15 @@ export function ClientTimesheetsPage() {
                                         onClick={() => void releaseClientPayroll(x.id)}
                                       >
                                         {t("client_timesheet_release_payroll")}
+                                      </button>
+                                    )}
+                                    {canDisputeTimesheet(x.status) && (
+                                      <button
+                                        type="button"
+                                        className="text-error font-semibold hover:underline"
+                                        onClick={() => openDispute(x)}
+                                      >
+                                        {t("timesheet_flag_for_review")}
                                       </button>
                                     )}
                                   </div>

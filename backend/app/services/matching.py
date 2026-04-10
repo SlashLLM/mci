@@ -1,5 +1,6 @@
 """Rule-based matching: eligibility + weighted score (PRD §9)."""
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
@@ -20,28 +21,83 @@ from app.models import (
 from app.services.geo import haversine_m
 
 
-async def get_weights_for_job_type(db: AsyncSession, job_type: str) -> JobTypeWeight:
-    result = await db.execute(select(JobTypeWeight).where(JobTypeWeight.job_type == job_type))
-    w = result.scalar_one_or_none()
-    if w:
-        return w
-    result = await db.execute(select(JobTypeWeight).where(JobTypeWeight.job_type == "_default"))
-    d = result.scalar_one_or_none()
-    if d:
-        return d
-    # synthetic default
-    return JobTypeWeight(
-        job_type=job_type,
-        weight_proximity=0.3,
-        weight_rating=0.25,
-        weight_job_type=0.2,
-        weight_completion=0.15,
-        weight_tier=0.1,
+@dataclass(frozen=True)
+class MatchWeights:
+    weight_proximity: float
+    weight_rating: float
+    weight_job_type: float
+    weight_completion: float
+    weight_tier: float
+
+    def to_dict(self) -> dict[str, float]:
+        return {
+            "weight_proximity": self.weight_proximity,
+            "weight_rating": self.weight_rating,
+            "weight_job_type": self.weight_job_type,
+            "weight_completion": self.weight_completion,
+            "weight_tier": self.weight_tier,
+        }
+
+
+DEFAULT_MATCH_WEIGHTS = MatchWeights(
+    weight_proximity=0.3,
+    weight_rating=0.25,
+    weight_job_type=0.2,
+    weight_completion=0.15,
+    weight_tier=0.1,
+)
+
+
+def _match_weights_from_mapping(payload: dict | None) -> MatchWeights | None:
+    if not payload:
+        return None
+    return MatchWeights(
+        weight_proximity=float(payload.get("weight_proximity", 0.0)),
+        weight_rating=float(payload.get("weight_rating", 0.0)),
+        weight_job_type=float(payload.get("weight_job_type", 0.0)),
+        weight_completion=float(payload.get("weight_completion", 0.0)),
+        weight_tier=float(payload.get("weight_tier", 0.0)),
     )
 
 
+def _match_weights_from_row(row: JobTypeWeight | None) -> MatchWeights | None:
+    if row is None:
+        return None
+    return MatchWeights(
+        weight_proximity=float(row.weight_proximity),
+        weight_rating=float(row.weight_rating),
+        weight_job_type=float(row.weight_job_type),
+        weight_completion=float(row.weight_completion),
+        weight_tier=float(row.weight_tier),
+    )
+
+
+async def get_default_weights_for_job_type(db: AsyncSession, job_type: str) -> MatchWeights:
+    result = await db.execute(select(JobTypeWeight).where(JobTypeWeight.job_type == job_type))
+    w = _match_weights_from_row(result.scalar_one_or_none())
+    if w:
+        return w
+    result = await db.execute(select(JobTypeWeight).where(JobTypeWeight.job_type == "_default"))
+    d = _match_weights_from_row(result.scalar_one_or_none())
+    if d:
+        return d
+    return DEFAULT_MATCH_WEIGHTS
+
+
+async def get_effective_weights_for_job(db: AsyncSession, job: JobOrder) -> MatchWeights:
+    override_weights = _match_weights_from_mapping(job.match_weight_overrides)
+    if override_weights is not None:
+        return override_weights
+    return await get_default_weights_for_job_type(db, job.job_type)
+
+
 def tier_score(tier: WorkerTier) -> float:
-    return {WorkerTier.elite: 1.0, WorkerTier.preferred: 0.7, WorkerTier.standard: 0.4}[tier]
+    return {
+        WorkerTier.elite: 1.0,
+        WorkerTier.preferred: 0.7,
+        WorkerTier.standard: 0.4,
+        WorkerTier.probation: 0.1,
+    }[tier]
 
 
 async def worker_has_overlap(
@@ -111,7 +167,7 @@ async def list_eligible_workers(
 def score_worker(
     worker: WorkerProfile,
     job: JobOrder,
-    weights: JobTypeWeight,
+    weights: MatchWeights,
     is_preferred: bool,
 ) -> float:
     # proximity 0..1 (closer better), cap at 50km -> 0
@@ -140,7 +196,7 @@ async def rank_workers_for_shift(
     job: JobOrder,
     shift: Shift,
 ) -> list[tuple[WorkerProfile, float]]:
-    weights = await get_weights_for_job_type(db, job.job_type)
+    weights = await get_effective_weights_for_job(db, job)
     eligible = await list_eligible_workers(db, job, shift)
     pref_ids: set[int] = set()
     if job.client_org_id:

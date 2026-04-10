@@ -14,21 +14,22 @@ from app.models import (
     TimesheetStatus,
 )
 from app.services.payroll_calc import compute_timesheet_pay
+from app.services.worker_ratings import POINTS_PER_COMPLETED_SHIFT, adjust_worker_points
 
 
 async def ensure_timesheet_for_assignment(
     db: AsyncSession,
     assignment: ShiftAssignment,
     attendance: AttendanceRecord | None,
-) -> TimesheetEntry | None:
+) -> tuple[TimesheetEntry | None, bool]:
     if assignment.status not in (AssignmentStatus.completed, AssignmentStatus.confirmed):
-        return None
+        return None, False
     r = await db.execute(
         select(TimesheetEntry).where(TimesheetEntry.shift_assignment_id == assignment.id)
     )
     existing = r.scalar_one_or_none()
     if existing:
-        return existing
+        return existing, False
 
     shift = assignment.shift
     job = shift.job_order
@@ -57,7 +58,7 @@ async def ensure_timesheet_for_assignment(
     )
     db.add(entry)
     await db.flush()
-    return entry
+    return entry, True
 
 
 async def mark_assignment_completed_if_clocked(
@@ -71,7 +72,9 @@ async def mark_assignment_completed_if_clocked(
         AttendanceStatus.unverified,
     ):
         assignment.status = AssignmentStatus.completed
-        await ensure_timesheet_for_assignment(db, assignment, attendance)
+        _entry, created = await ensure_timesheet_for_assignment(db, assignment, attendance)
+        if created:
+            await adjust_worker_points(db, assignment.worker_id, POINTS_PER_COMPLETED_SHIFT)
 
 
 def _hours_from_attendance(attendance: AttendanceRecord, shift: Shift) -> tuple[float, float, float]:

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.auth.deps import require_roles
+from app.config import get_settings
 from app.db.session import get_db
 from app.models import (
     AssignmentStatus,
@@ -21,6 +22,7 @@ from app.models import (
     User,
     UserRole,
     WorkerProfile,
+    WorkerStatus,
 )
 from app.services.attendance_rules import (
     clock_in_earliest_utc,
@@ -34,8 +36,109 @@ from app.services.dispatch import application_next_rank, confirmed_count, waitli
 from app.services.job_status import refresh_job_order_fill_status
 from app.services.notifications import notify_user
 from app.services.recommendations import job_order_ids_rejected_for_worker, recommended_shifts_for_worker
+from app.services.ta_client_contracts import get_active_contract_for_org
+from app.services.worker_ratings import POINTS_PENALTY_LATE_CANCEL, adjust_worker_points
 
 router = APIRouter(prefix="/worker", tags=["worker-app"])
+
+
+async def _notify_ta_users_of_overlap(
+    db: AsyncSession,
+    *,
+    worker_profile_id: int,
+    new_assignment_id: int,
+    shift_id: int,
+    starts_at: datetime,
+    ends_at: datetime,
+) -> None:
+    current_shift = await db.get(Shift, shift_id)
+    if not current_shift:
+        return
+    current_job = await db.get(JobOrder, current_shift.job_order_id)
+    if not current_job:
+        return
+
+    r = await db.execute(
+        select(ShiftAssignment)
+        .options(selectinload(ShiftAssignment.shift))
+        .join(Shift, ShiftAssignment.shift_id == Shift.id)
+        .where(
+            ShiftAssignment.worker_id == worker_profile_id,
+            ShiftAssignment.status == AssignmentStatus.confirmed,
+            ShiftAssignment.id != new_assignment_id,
+            Shift.starts_at < ends_at,
+            Shift.ends_at > starts_at,
+        )
+        .order_by(Shift.starts_at.asc())
+    )
+    overlaps = r.scalars().all()
+    if not overlaps:
+        return
+    worker = await db.get(WorkerProfile, worker_profile_id)
+    worker_name = (worker.full_name or "").strip() if worker else ""
+    label = worker_name or f"Worker #{worker_profile_id}"
+    contract = await get_active_contract_for_org(db, current_job.client_org_id)
+    if contract:
+        recipient_rows = await db.execute(
+            select(User.id).where(
+                User.id == contract.ta_user_id,
+                User.role == UserRole.ta,
+            )
+        )
+    else:
+        recipient_rows = await db.execute(
+            select(User.id).where(
+                User.role == UserRole.client,
+                User.client_org_id == current_job.client_org_id,
+            )
+        )
+
+    for recipient_user_id in recipient_rows.scalars().all():
+        await notify_user(
+            db,
+            recipient_user_id,
+            title="Shift overlap conflict",
+            body=f"{label} has overlapping confirmed shifts. New shift #{shift_id} overlaps with {len(overlaps)} existing assignment(s).",
+            payload={
+                "type": "overlap_conflict",
+                "worker_profile_id": worker_profile_id,
+                "new_assignment_id": new_assignment_id,
+                "new_shift_id": shift_id,
+                "overlap_assignment_ids": [a.id for a in overlaps],
+            },
+        )
+
+
+async def _auto_notify_next_waitlisted_worker(db: AsyncSession, shift_id: int, cancelled_assignment_id: int) -> None:
+    r = await db.execute(
+        select(ShiftAssignment)
+        .where(
+            ShiftAssignment.shift_id == shift_id,
+            ShiftAssignment.status == AssignmentStatus.waitlisted,
+        )
+        .order_by(ShiftAssignment.waitlist_rank.asc().nulls_last(), ShiftAssignment.created_at.asc())
+    )
+    next_waitlisted = r.scalars().first()
+    if not next_waitlisted:
+        return
+    wp = await db.get(WorkerProfile, next_waitlisted.worker_id)
+    if not wp:
+        return
+    user = await db.get(User, wp.user_id)
+    if not user:
+        return
+    await notify_user(
+        db,
+        user.id,
+        title="Shift opening available",
+        body="A spot has opened up in a shift where you are waitlisted. Please review your roster status.",
+        payload={
+            "type": "waitlist_opening",
+            "shift_id": shift_id,
+            "waitlist_assignment_id": next_waitlisted.id,
+            "cancelled_assignment_id": cancelled_assignment_id,
+        },
+    )
 
 
 async def _decline_pending_offers_for_shift_worker(
@@ -98,6 +201,8 @@ async def my_offers(
     wp = r.scalar_one_or_none()
     if not wp:
         return []
+    if wp.status == WorkerStatus.blacklisted:
+        return []
     rejected_jobs = await job_order_ids_rejected_for_worker(db, wp.id)
     r2 = await db.execute(
         select(ShiftOffer)
@@ -133,6 +238,8 @@ async def accept_offer(
     wp = r.scalar_one_or_none()
     if not wp:
         raise HTTPException(404)
+    if wp.status == WorkerStatus.blacklisted:
+        raise HTTPException(403, detail="Blacklisted workers cannot accept offers")
     offer = await db.get(ShiftOffer, offer_id)
     if not offer or offer.worker_id != wp.id or offer.status != ShiftOfferStatus.pending:
         raise HTTPException(400, detail="Invalid offer")
@@ -183,6 +290,15 @@ async def accept_offer(
         )
         db.add(sa)
     await db.flush()
+    if sa.status == AssignmentStatus.confirmed:
+        await _notify_ta_users_of_overlap(
+            db,
+            worker_profile_id=wp.id,
+            new_assignment_id=sa.id,
+            shift_id=shift.id,
+            starts_at=shift.starts_at,
+            ends_at=shift.ends_at,
+        )
     await refresh_job_order_fill_status(db, job)
     await notify_user(db, user.id, title="Shift update", body=f"Status: {sa.status.value} for shift {shift.id}")
     return {"assignment_status": sa.status.value}
@@ -214,6 +330,8 @@ async def marketplace_shifts(
     r = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
     wp = r.scalar_one_or_none()
     if not wp:
+        return []
+    if wp.status == WorkerStatus.blacklisted:
         return []
     ranked = await recommended_shifts_for_worker(db, wp, limit=50, max_km=max_km)
     shift_ids = [s.id for s, _ in ranked]
@@ -306,6 +424,8 @@ async def apply_marketplace_shift(
     wp = r.scalar_one_or_none()
     if not wp:
         raise HTTPException(404)
+    if wp.status == WorkerStatus.blacklisted:
+        raise HTTPException(403, detail="Blacklisted workers cannot apply to shifts")
     shift = await db.get(Shift, shift_id)
     if not shift:
         raise HTTPException(404)
@@ -509,6 +629,60 @@ async def my_shifts(
     ]
 
 
+@router.get("/schedule")
+async def worker_schedule(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.worker))],
+):
+    r = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
+    wp = r.scalar_one_or_none()
+    if not wp:
+        return {"confirmed": [], "pending_applications": [], "past_shifts": []}
+    now = datetime.now(timezone.utc)
+    r2 = await db.execute(
+        select(ShiftAssignment)
+        .options(selectinload(ShiftAssignment.shift).selectinload(Shift.job_order))
+        .join(Shift, ShiftAssignment.shift_id == Shift.id)
+        .where(
+            ShiftAssignment.worker_id == wp.id,
+            ShiftAssignment.status.in_(
+                (
+                    AssignmentStatus.confirmed,
+                    AssignmentStatus.waitlisted,
+                    AssignmentStatus.applied,
+                    AssignmentStatus.completed,
+                    AssignmentStatus.cancelled,
+                )
+            ),
+        )
+        .order_by(Shift.starts_at.asc())
+    )
+    rows = r2.scalars().all()
+
+    def _item(a: ShiftAssignment) -> dict:
+        job = a.shift.job_order
+        return {
+            "assignment_id": a.id,
+            "status": a.status.value,
+            "shift": {
+                "id": a.shift.id,
+                "starts_at": a.shift.starts_at.isoformat(),
+                "ends_at": a.shift.ends_at.isoformat(),
+                "job_title": job.title if job else "",
+                "job_id": a.shift.job_order_id,
+            },
+        }
+
+    confirmed = [_item(a) for a in rows if a.status == AssignmentStatus.confirmed and a.shift.ends_at >= now]
+    pending = [_item(a) for a in rows if a.status in (AssignmentStatus.applied, AssignmentStatus.waitlisted)]
+    past = [_item(a) for a in rows if a.shift.ends_at < now or a.status in (AssignmentStatus.completed, AssignmentStatus.cancelled)]
+    return {
+        "confirmed": confirmed,
+        "pending_applications": pending,
+        "past_shifts": sorted(past, key=lambda x: x["shift"]["starts_at"], reverse=True),
+    }
+
+
 @router.get("/history")
 async def worker_history(
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -567,13 +741,36 @@ async def cancel_assignment(
     if not a or a.worker_id != wp.id:
         raise HTTPException(404)
     shift = await db.get(Shift, a.shift_id)
-    threshold_hours = 4
+    if not shift:
+        raise HTTPException(404, detail="Shift not found")
+    settings = get_settings()
+    threshold_hours = max(0, int(getattr(settings, "shift_attendance_change_cutoff_hours", 4)))
     start = shift.starts_at
     if start.tzinfo is None:
         start = start.replace(tzinfo=timezone.utc)
-    if (start - datetime.now(timezone.utc)).total_seconds() < threshold_hours * 3600:
+    seconds_until_start = (start - datetime.now(timezone.utc)).total_seconds()
+    is_late_cancellation = seconds_until_start < threshold_hours * 3600
+    if is_late_cancellation:
         wp.late_cancel_count = (wp.late_cancel_count or 0) + 1
+        await adjust_worker_points(db, wp.id, POINTS_PENALTY_LATE_CANCEL)
     a.status = AssignmentStatus.cancelled
     job = await db.get(JobOrder, shift.job_order_id)
+    if is_late_cancellation:
+        ta_rows = await db.execute(select(User).where(User.role == UserRole.ta))
+        for ta_user in ta_rows.scalars().all():
+            await notify_user(
+                db,
+                ta_user.id,
+                title="Late cancellation alert",
+                body=f"Worker #{wp.id} cancelled assignment #{assignment_id} within {threshold_hours}h of shift start.",
+                payload={
+                    "type": "late_cancellation",
+                    "worker_profile_id": wp.id,
+                    "assignment_id": assignment_id,
+                    "shift_id": shift.id,
+                    "threshold_hours": threshold_hours,
+                },
+            )
+        await _auto_notify_next_waitlisted_worker(db, shift.id, assignment_id)
     await refresh_job_order_fill_status(db, job)
-    return {"ok": True}
+    return {"ok": True, "late_cancellation": is_late_cancellation, "threshold_hours": threshold_hours}

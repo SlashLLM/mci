@@ -15,6 +15,7 @@ from app.models import (
 from app.services.audit import log_audit
 from app.services.email_outbound import send_support_email
 from app.services.notifications import notify_user
+from app.services.worker_ratings import POINTS_PENALTY_NO_SHOW, adjust_worker_points
 
 
 async def record_absence_strike_if_eligible(
@@ -40,6 +41,7 @@ async def record_absence_strike_if_eligible(
     now = datetime.now(timezone.utc)
     attendance.absence_strike_recorded_at = now
     wp.no_show_count = (wp.no_show_count or 0) + 1
+    await adjust_worker_points(db, wp.id, POINTS_PENALTY_NO_SHOW)
 
     settings = get_settings()
     support_hint = (

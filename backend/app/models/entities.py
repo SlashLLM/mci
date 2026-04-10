@@ -35,6 +35,7 @@ class WorkerStatus(str, enum.Enum):
 
 
 class WorkerTier(str, enum.Enum):
+    probation = "probation"
     standard = "standard"
     preferred = "preferred"
     elite = "elite"
@@ -88,6 +89,7 @@ class AttendanceStatus(str, enum.Enum):
 
 class TimesheetStatus(str, enum.Enum):
     pending = "pending"
+    disputed = "disputed"
     employer_endorsed = "employer_endorsed"
     ta_verified = "ta_verified"
     payment_released = "payment_released"
@@ -149,6 +151,8 @@ class WorkerProfile(Base):
     completion_rate: Mapped[float] = mapped_column(Float, default=1.0)
     tier: Mapped[WorkerTier] = mapped_column(Enum(WorkerTier), default=WorkerTier.standard)
     status: Mapped[WorkerStatus] = mapped_column(Enum(WorkerStatus), default=WorkerStatus.active)
+    internal_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    follow_up_required: Mapped[bool] = mapped_column(Boolean, default=False)
     points: Mapped[int] = mapped_column(Integer, default=0)
     no_show_count: Mapped[int] = mapped_column(Integer, default=0)
     late_cancel_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -272,6 +276,7 @@ class JobOrder(Base):
     required_certifications: Mapped[list] = mapped_column(JSON, default=list)
     uniform_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     special_instructions: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    match_weight_overrides: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     geofence_radius_m: Mapped[int] = mapped_column(Integer, default=200)
     acceptance_window_minutes: Mapped[int] = mapped_column(Integer, default=120)
     no_show_grace_minutes: Mapped[int] = mapped_column(Integer, default=15)

@@ -4,7 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from app.auth.deps import require_roles
 from app.db.session import get_db
@@ -26,10 +26,14 @@ from app.models import (
 from app.schemas.job_orders import (
     JobAssignmentWorkerOut,
     JobDeclinedWorkerOut,
+    JobAssignmentRejectRequest,
     JobOrderCreate,
     JobOrderDetail,
+    JobOverlapAssignmentOut,
+    JobOrderMatchWeightsUpdate,
     JobOrderOut,
     JobRejectedWorkerOut,
+    MatchWeightConfig,
     ShiftOut,
 )
 from app.schemas.workers import WorkerProfileOut
@@ -37,6 +41,8 @@ from app.routers.workers import _profile_out
 from app.services.audit import log_audit
 from app.services.dispatch import confirmed_count, publish_job_order, waitlist_next_rank
 from app.services.job_status import refresh_job_order_fill_status
+from app.services.matching import get_default_weights_for_job_type, get_effective_weights_for_job, score_worker
+from app.services.notifications import notify_user
 from app.services.ta_client_contracts import (
     get_active_contract_for_org,
     list_contracted_org_ids_for_ta,
@@ -47,6 +53,71 @@ from app.services.ta_client_contracts import (
 router = APIRouter(prefix="/job-orders", tags=["job-orders"])
 
 
+async def _notify_ta_users_of_overlap(
+    db: AsyncSession,
+    *,
+    worker_profile_id: int,
+    new_assignment_id: int,
+    shift_id: int,
+    starts_at: datetime,
+    ends_at: datetime,
+) -> None:
+    current_shift = await db.get(Shift, shift_id)
+    if not current_shift:
+        return
+    current_job = await db.get(JobOrder, current_shift.job_order_id)
+    if not current_job:
+        return
+
+    r = await db.execute(
+        select(ShiftAssignment)
+        .join(Shift, ShiftAssignment.shift_id == Shift.id)
+        .where(
+            ShiftAssignment.worker_id == worker_profile_id,
+            ShiftAssignment.status == AssignmentStatus.confirmed,
+            ShiftAssignment.id != new_assignment_id,
+            Shift.starts_at < ends_at,
+            Shift.ends_at > starts_at,
+        )
+    )
+    overlaps = r.scalars().all()
+    if not overlaps:
+        return
+    worker = await db.get(WorkerProfile, worker_profile_id)
+    worker_name = (worker.full_name or "").strip() if worker else ""
+    label = worker_name or f"Worker #{worker_profile_id}"
+    contract = await get_active_contract_for_org(db, current_job.client_org_id)
+    if contract:
+        recipient_rows = await db.execute(
+            select(User.id).where(
+                User.id == contract.ta_user_id,
+                User.role == UserRole.ta,
+            )
+        )
+    else:
+        recipient_rows = await db.execute(
+            select(User.id).where(
+                User.role == UserRole.client,
+                User.client_org_id == current_job.client_org_id,
+            )
+        )
+
+    for recipient_user_id in recipient_rows.scalars().all():
+        await notify_user(
+            db,
+            recipient_user_id,
+            title="Shift overlap conflict",
+            body=f"{label} has overlapping confirmed shifts. New shift #{shift_id} overlaps with {len(overlaps)} existing assignment(s).",
+            payload={
+                "type": "overlap_conflict",
+                "worker_profile_id": worker_profile_id,
+                "new_assignment_id": new_assignment_id,
+                "new_shift_id": shift_id,
+                "overlap_assignment_ids": [a.id for a in overlaps],
+            },
+        )
+
+
 async def _can_access_job(db: AsyncSession, user: User, job: JobOrder) -> bool:
     if user.role == UserRole.admin:
         return True
@@ -55,6 +126,14 @@ async def _can_access_job(db: AsyncSession, user: User, job: JobOrder) -> bool:
     if user.role == UserRole.ta:
         return await ta_has_active_contract_with_org(db, user.id, job.client_org_id)
     return False
+
+
+def _serialize_match_weights(payload: MatchWeightConfig | None) -> dict | None:
+    return payload.model_dump() if payload is not None else None
+
+
+def _match_weights_out(payload: dict) -> MatchWeightConfig:
+    return MatchWeightConfig.model_validate(payload)
 
 
 @router.post("", response_model=JobOrderOut)
@@ -93,6 +172,7 @@ async def create_job_order(
         required_certifications=body.required_certifications,
         uniform_notes=body.uniform_notes,
         special_instructions=body.special_instructions,
+        match_weight_overrides=_serialize_match_weights(body.match_weights),
         geofence_radius_m=body.geofence_radius_m,
         acceptance_window_minutes=body.acceptance_window_minutes,
         status=JobOrderStatus.draft,
@@ -151,6 +231,7 @@ async def create_job_order_for_client(
         required_certifications=body.required_certifications,
         uniform_notes=body.uniform_notes,
         special_instructions=body.special_instructions,
+        match_weight_overrides=_serialize_match_weights(body.match_weights),
         geofence_radius_m=body.geofence_radius_m,
         acceptance_window_minutes=body.acceptance_window_minutes,
         status=JobOrderStatus.draft,
@@ -172,22 +253,23 @@ async def create_job_order_for_client(
 
 
 async def _accepted_and_declined_for_job(
-    db: AsyncSession, job_id: int
+    db: AsyncSession, job: JobOrder
 ) -> tuple[list[JobAssignmentWorkerOut], list[JobDeclinedWorkerOut]]:
     pref_worker_ids: set[int] = set()
     r_pref = await db.execute(
         select(PreferredWorker.worker_id)
         .join(JobOrder, PreferredWorker.client_org_id == JobOrder.client_org_id)
-        .where(JobOrder.id == job_id)
+        .where(JobOrder.id == job.id)
     )
     pref_worker_ids = set(r_pref.scalars().all())
+    effective_weights = await get_effective_weights_for_job(db, job)
 
     r = await db.execute(
         select(ShiftAssignment, Shift, WorkerProfile)
         .join(Shift, ShiftAssignment.shift_id == Shift.id)
         .join(WorkerProfile, ShiftAssignment.worker_id == WorkerProfile.id)
         .where(
-            Shift.job_order_id == job_id,
+            Shift.job_order_id == job.id,
             ShiftAssignment.status.in_(
                 (AssignmentStatus.confirmed, AssignmentStatus.waitlisted, AssignmentStatus.applied),
             ),
@@ -195,6 +277,7 @@ async def _accepted_and_declined_for_job(
     )
     accepted: list[JobAssignmentWorkerOut] = []
     for a, sh, wp in r.all():
+        is_preferred = wp.id in pref_worker_ids
         accepted.append(
             JobAssignmentWorkerOut(
                 assignment_id=a.id,
@@ -204,7 +287,7 @@ async def _accepted_and_declined_for_job(
                 worker_profile_id=wp.id,
                 worker_name=(wp.full_name or "").strip() or "—",
                 assignment_status=a.status.value,
-                match_score=a.match_score,
+                match_score=score_worker(wp, job, effective_weights, is_preferred),
                 applied_at=a.created_at,
                 rating_avg=float(wp.rating_avg or 0.0),
                 certifications_count=len(wp.certifications or []),
@@ -212,7 +295,7 @@ async def _accepted_and_declined_for_job(
                 worker_certifications=list(wp.certifications or []),
                 location_lat=wp.location_lat,
                 location_lng=wp.location_lng,
-                is_preferred=wp.id in pref_worker_ids,
+                is_preferred=is_preferred,
             )
         )
     accepted.sort(key=lambda x: (x.shift_starts_at, x.worker_name.lower()))
@@ -221,7 +304,7 @@ async def _accepted_and_declined_for_job(
         select(ShiftAssignment.shift_id, ShiftAssignment.worker_id)
         .join(Shift, ShiftAssignment.shift_id == Shift.id)
         .where(
-            Shift.job_order_id == job_id,
+            Shift.job_order_id == job.id,
             ShiftAssignment.status != AssignmentStatus.rejected,
         )
     )
@@ -232,7 +315,7 @@ async def _accepted_and_declined_for_job(
         .join(Shift, ShiftOffer.shift_id == Shift.id)
         .join(WorkerProfile, ShiftOffer.worker_id == WorkerProfile.id)
         .where(
-            Shift.job_order_id == job_id,
+            Shift.job_order_id == job.id,
             ShiftOffer.status == ShiftOfferStatus.declined,
         )
     )
@@ -254,13 +337,14 @@ async def _accepted_and_declined_for_job(
     return accepted, declined
 
 
-async def _rejected_workers_for_job(db: AsyncSession, job_id: int) -> list[JobRejectedWorkerOut]:
+async def _rejected_workers_for_job(db: AsyncSession, job: JobOrder) -> list[JobRejectedWorkerOut]:
+    effective_weights = await get_effective_weights_for_job(db, job)
     r = await db.execute(
         select(ShiftAssignment, Shift, WorkerProfile)
         .join(Shift, ShiftAssignment.shift_id == Shift.id)
         .join(WorkerProfile, ShiftAssignment.worker_id == WorkerProfile.id)
         .where(
-            Shift.job_order_id == job_id,
+            Shift.job_order_id == job.id,
             ShiftAssignment.status == AssignmentStatus.rejected,
         )
     )
@@ -275,10 +359,59 @@ async def _rejected_workers_for_job(db: AsyncSession, job_id: int) -> list[JobRe
                 worker_profile_id=wp.id,
                 worker_name=(wp.full_name or "").strip() or "—",
                 assignment_status=a.status.value,
-                match_score=a.match_score,
+                match_score=score_worker(wp, job, effective_weights, False),
             )
         )
     out.sort(key=lambda x: (x.shift_starts_at, x.worker_name.lower()))
+    return out
+
+
+async def _overlapping_assignments_for_job(db: AsyncSession, job: JobOrder) -> list[JobOverlapAssignmentOut]:
+    overlap_assignment = aliased(ShiftAssignment)
+    overlap_shift = aliased(Shift)
+    overlap_job = aliased(JobOrder)
+    worker = aliased(WorkerProfile)
+
+    r = await db.execute(
+        select(ShiftAssignment, Shift, worker, overlap_assignment, overlap_shift, overlap_job)
+        .join(Shift, ShiftAssignment.shift_id == Shift.id)
+        .join(worker, ShiftAssignment.worker_id == worker.id)
+        .join(
+            overlap_assignment,
+            overlap_assignment.worker_id == ShiftAssignment.worker_id,
+        )
+        .join(overlap_shift, overlap_assignment.shift_id == overlap_shift.id)
+        .join(overlap_job, overlap_shift.job_order_id == overlap_job.id)
+        .where(
+            Shift.job_order_id == job.id,
+            ShiftAssignment.status == AssignmentStatus.confirmed,
+            overlap_assignment.status == AssignmentStatus.confirmed,
+            overlap_assignment.id != ShiftAssignment.id,
+            overlap_shift.job_order_id != job.id,
+            Shift.starts_at < overlap_shift.ends_at,
+            Shift.ends_at > overlap_shift.starts_at,
+        )
+        .order_by(Shift.starts_at, worker.full_name, overlap_shift.starts_at, overlap_job.title)
+    )
+
+    out: list[JobOverlapAssignmentOut] = []
+    for current_assignment, current_shift, wp, overlapping_assignment, overlapping_shift, overlapping_job in r.all():
+        out.append(
+            JobOverlapAssignmentOut(
+                current_assignment_id=current_assignment.id,
+                current_shift_id=current_shift.id,
+                current_shift_starts_at=current_shift.starts_at,
+                current_shift_ends_at=current_shift.ends_at,
+                worker_profile_id=wp.id,
+                worker_name=(wp.full_name or "").strip() or "—",
+                overlap_assignment_id=overlapping_assignment.id,
+                overlap_shift_id=overlapping_shift.id,
+                overlap_shift_starts_at=overlapping_shift.starts_at,
+                overlap_shift_ends_at=overlapping_shift.ends_at,
+                overlap_job_id=overlapping_job.id,
+                overlap_job_title=(overlapping_job.title or "").strip() or f"Job #{overlapping_job.id}",
+            )
+        )
     return out
 
 
@@ -300,6 +433,7 @@ async def _slot_totals(db: AsyncSession, job_id: int) -> tuple[int, int]:
 async def _to_out(db: AsyncSession, job: JobOrder) -> JobOrderOut:
     await refresh_job_order_fill_status(db, job)
     total_slots, filled = await _slot_totals(db, job.id)
+    effective_weights = await get_effective_weights_for_job(db, job)
     return JobOrderOut(
         id=job.id,
         client_org_id=job.client_org_id,
@@ -314,6 +448,8 @@ async def _to_out(db: AsyncSession, job: JobOrder) -> JobOrderOut:
         geofence_radius_m=job.geofence_radius_m,
         filled_slots=filled,
         total_slots=total_slots,
+        match_weights=_match_weights_out(effective_weights.to_dict()),
+        match_weight_overrides=_match_weights_out(job.match_weight_overrides) if job.match_weight_overrides else None,
     )
 
 
@@ -321,11 +457,13 @@ async def _to_detail_out(db: AsyncSession, job: JobOrder, viewer: User) -> JobOr
     await refresh_job_order_fill_status(db, job)
     total_slots, filled = await _slot_totals(db, job.id)
     shifts_sorted = sorted(job.shifts, key=lambda s: s.starts_at)
-    accepted_workers, declined_workers = await _accepted_and_declined_for_job(db, job.id)
-    rejected_workers = await _rejected_workers_for_job(db, job.id)
+    accepted_workers, declined_workers = await _accepted_and_declined_for_job(db, job)
+    rejected_workers = await _rejected_workers_for_job(db, job)
     contract = await get_active_contract_for_org(db, job.client_org_id)
     has_ta_payroll = contract is not None
     viewer_can_vet = await user_can_vet_shift_assignments(db, viewer, job)
+    overlapping_assignments = await _overlapping_assignments_for_job(db, job) if viewer_can_vet else []
+    effective_weights = await get_effective_weights_for_job(db, job)
     return JobOrderDetail(
         id=job.id,
         client_org_id=job.client_org_id,
@@ -340,6 +478,8 @@ async def _to_detail_out(db: AsyncSession, job: JobOrder, viewer: User) -> JobOr
         geofence_radius_m=job.geofence_radius_m,
         filled_slots=filled,
         total_slots=total_slots,
+        match_weights=_match_weights_out(effective_weights.to_dict()),
+        match_weight_overrides=_match_weights_out(job.match_weight_overrides) if job.match_weight_overrides else None,
         hourly_rate=job.hourly_rate,
         per_shift_rate=job.per_shift_rate,
         required_skills=list(job.required_skills or []),
@@ -352,6 +492,7 @@ async def _to_detail_out(db: AsyncSession, job: JobOrder, viewer: User) -> JobOr
         accepted_workers=accepted_workers,
         declined_workers=declined_workers,
         rejected_workers=rejected_workers,
+        overlapping_assignments=overlapping_assignments,
         has_ta_payroll=has_ta_payroll,
         viewer_can_vet_assignments=viewer_can_vet,
     )
@@ -374,6 +515,75 @@ async def _assignment_with_access(
     return a, shift, job
 
 
+async def _notify_worker_of_conflict_rejection(
+    db: AsyncSession,
+    *,
+    worker_profile_id: int,
+    job: JobOrder,
+    shift: Shift,
+) -> None:
+    worker = await db.get(WorkerProfile, worker_profile_id)
+    if not worker:
+        return
+    user = await db.get(User, worker.user_id)
+    if not user:
+        return
+    await notify_user(
+        db,
+        user.id,
+        title="Shift assignment rejected",
+        body=(
+            f"You have been rejected from {job.title} because it conflicts with another confirmed shift. "
+            f"Shift time: {shift.starts_at.isoformat()} to {shift.ends_at.isoformat()}."
+        ),
+        payload={
+            "type": "assignment_rejected_conflict",
+            "job_order_id": job.id,
+            "shift_id": shift.id,
+            "worker_profile_id": worker_profile_id,
+        },
+    )
+
+
+@router.get("/match-weights/defaults", response_model=MatchWeightConfig)
+async def get_job_type_match_weights(
+    job_type: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.ta, UserRole.client, UserRole.admin))],
+):
+    del user
+    weights = await get_default_weights_for_job_type(db, job_type)
+    return _match_weights_out(weights.to_dict())
+
+
+@router.patch("/{job_id}/match-weights", response_model=JobOrderDetail)
+async def update_job_order_match_weights(
+    job_id: int,
+    body: JobOrderMatchWeightsUpdate,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.ta, UserRole.client, UserRole.admin))],
+):
+    r = await db.execute(
+        select(JobOrder).options(selectinload(JobOrder.shifts)).where(JobOrder.id == job_id)
+    )
+    job = r.scalar_one_or_none()
+    if not job or not await _can_access_job(db, user, job):
+        raise HTTPException(404)
+    if not await user_can_vet_shift_assignments(db, user, job):
+        raise HTTPException(403, detail="You cannot update match weights for this job")
+    job.match_weight_overrides = _serialize_match_weights(body.match_weights)
+    await db.flush()
+    await log_audit(
+        db,
+        actor_user_id=user.id,
+        action="job_order_match_weights_update",
+        entity_type="JobOrder",
+        entity_id=str(job_id),
+        new_values={"match_weight_overrides": job.match_weight_overrides},
+    )
+    return await _to_detail_out(db, job, user)
+
+
 @router.post("/assignments/{assignment_id}/promote-from-waitlist")
 async def promote_assignment_from_waitlist(
     assignment_id: int,
@@ -392,6 +602,14 @@ async def promote_assignment_from_waitlist(
     a.waitlist_rank = None
     a.confirmed_at = datetime.now(timezone.utc)
     await db.flush()
+    await _notify_ta_users_of_overlap(
+        db,
+        worker_profile_id=a.worker_id,
+        new_assignment_id=a.id,
+        shift_id=shift.id,
+        starts_at=shift.starts_at,
+        ends_at=shift.ends_at,
+    )
     await refresh_job_order_fill_status(db, job)
     await log_audit(
         db,
@@ -408,6 +626,7 @@ async def reject_assignment(
     assignment_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(require_roles(UserRole.ta, UserRole.client, UserRole.admin))],
+    body: JobAssignmentRejectRequest | None = None,
 ):
     a, shift, job = await _assignment_with_access(db, assignment_id, user)
     if not await user_can_vet_shift_assignments(db, user, job):
@@ -420,6 +639,13 @@ async def reject_assignment(
     a.waitlist_rank = None
     a.confirmed_at = None
     await db.flush()
+    if body and body.reason == "schedule_conflict":
+        await _notify_worker_of_conflict_rejection(
+            db,
+            worker_profile_id=a.worker_id,
+            job=job,
+            shift=shift,
+        )
     await refresh_job_order_fill_status(db, job)
     await log_audit(
         db,

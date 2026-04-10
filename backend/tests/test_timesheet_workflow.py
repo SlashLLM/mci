@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.db.base import Base
 from app.models import (
     AssignmentStatus,
+    AttendanceRecord,
+    AttendanceStatus,
     ClientOrganization,
     JobOrder,
     JobOrderStatus,
@@ -24,6 +26,7 @@ from app.models import (
     WorkerTier,
 )
 from app.services.payroll_export import export_ta_verified_payroll_line_csv, export_ta_verified_payroll_lines_csv
+from app.services.timesheet_flow import mark_assignment_completed_if_clocked
 from app.services.worker_ratings import upsert_client_rating_for_assignment
 
 
@@ -123,7 +126,7 @@ async def test_export_ta_verified_payroll_csv_includes_verified_only(sqlite_sess
 
 
 @pytest.mark.asyncio
-async def test_upsert_client_rating_points_once(sqlite_session: AsyncSession):
+async def test_upsert_client_rating_does_not_change_points(sqlite_session: AsyncSession):
     org = ClientOrganization(name="O")
     sqlite_session.add(org)
     await sqlite_session.flush()
@@ -176,7 +179,7 @@ async def test_upsert_client_rating_points_once(sqlite_session: AsyncSession):
         stars=4,
     )
     await sqlite_session.refresh(wp)
-    assert wp.points == 10
+    assert wp.points == 0
     assert wp.rating_avg == 4.0
 
     await upsert_client_rating_for_assignment(
@@ -187,5 +190,70 @@ async def test_upsert_client_rating_points_once(sqlite_session: AsyncSession):
         stars=5,
     )
     await sqlite_session.refresh(wp)
-    assert wp.points == 10
+    assert wp.points == 0
     assert wp.rating_avg == 5.0
+
+
+@pytest.mark.asyncio
+async def test_completed_shift_awards_points_once(sqlite_session: AsyncSession):
+    now = datetime.now(timezone.utc)
+    org = ClientOrganization(name="Ops")
+    sqlite_session.add(org)
+    await sqlite_session.flush()
+    u_client = User(phone="+18880000011", role=UserRole.client, locale="en", client_org_id=org.id)
+    u_worker = User(phone="+18880000012", role=UserRole.worker, locale="en")
+    sqlite_session.add_all([u_client, u_worker])
+    await sqlite_session.flush()
+    wp = WorkerProfile(
+        user_id=u_worker.id,
+        full_name="Worker",
+        languages=[],
+        job_type_preferences=[],
+        skills=[],
+        certifications=[],
+        availability={},
+        tier=WorkerTier.standard,
+        status=WorkerStatus.active,
+        points=0,
+    )
+    sqlite_session.add(wp)
+    await sqlite_session.flush()
+    job = JobOrder(
+        client_org_id=org.id,
+        created_by_user_id=u_client.id,
+        title="Day shift",
+        job_type="Warehouse Worker",
+        location_address="SG",
+        location_lat=1.0,
+        location_lng=103.0,
+        workers_required_total=1,
+        pay_model=PayModel.hourly,
+        hourly_rate=12.0,
+        status=JobOrderStatus.open,
+    )
+    sqlite_session.add(job)
+    await sqlite_session.flush()
+    shift = Shift(job_order_id=job.id, starts_at=now - timedelta(hours=8), ends_at=now - timedelta(hours=1), workers_required=1)
+    sqlite_session.add(shift)
+    await sqlite_session.flush()
+    sa = ShiftAssignment(shift_id=shift.id, worker_id=wp.id, status=AssignmentStatus.confirmed)
+    sqlite_session.add(sa)
+    await sqlite_session.flush()
+    attendance = AttendanceRecord(
+        shift_assignment_id=sa.id,
+        status=AttendanceStatus.present,
+        clock_in_time=now - timedelta(hours=8),
+        clock_out_time=now - timedelta(hours=1),
+        total_hours=7.0,
+    )
+    sqlite_session.add(attendance)
+    await sqlite_session.flush()
+
+    await mark_assignment_completed_if_clocked(sqlite_session, sa, attendance)
+    await sqlite_session.refresh(wp)
+    assert wp.points == 10
+    assert wp.tier == WorkerTier.standard
+
+    await mark_assignment_completed_if_clocked(sqlite_session, sa, attendance)
+    await sqlite_session.refresh(wp)
+    assert wp.points == 10

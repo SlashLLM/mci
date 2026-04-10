@@ -5,6 +5,7 @@ import { isAllowedJobType, JOB_TYPES } from "../../constants/jobTypes";
 import { DEFAULT_MAP_CENTER, LocationMapPicker } from "../maps/LocationMapPicker";
 import { CertificationMultiPicker } from "../certifications/CertificationMultiPicker";
 import { SkillMultiPicker } from "../skills/SkillMultiPicker";
+import { DEFAULT_MATCH_WEIGHTS, MatchWeightFields, type MatchWeightConfig } from "./MatchWeightFields";
 
 export type ShiftRow = {
   starts_local: string;
@@ -82,6 +83,9 @@ export function JobOrderForm({ t, mode, organizations = [], onSuccess, lightMode
   const [rangeFrom, setRangeFrom] = useState("");
   const [rangeTo, setRangeTo] = useState("");
   const [rangeWorkers, setRangeWorkers] = useState("1");
+  const [defaultMatchWeights, setDefaultMatchWeights] = useState<MatchWeightConfig>(DEFAULT_MATCH_WEIGHTS);
+  const [customizeMatchWeights, setCustomizeMatchWeights] = useState(false);
+  const [matchWeights, setMatchWeights] = useState<MatchWeightConfig>(DEFAULT_MATCH_WEIGHTS);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const jobTypeFieldBase = useId().replace(/:/g, "_");
@@ -117,6 +121,30 @@ export function JobOrderForm({ t, mode, organizations = [], onSuccess, lightMode
     }
     setShifts(next);
   }
+
+  useEffect(() => {
+    const jt = jobType.trim();
+    if (!isAllowedJobType(jt)) {
+      setDefaultMatchWeights(DEFAULT_MATCH_WEIGHTS);
+      if (!customizeMatchWeights) setMatchWeights(DEFAULT_MATCH_WEIGHTS);
+      return;
+    }
+    let cancelled = false;
+    api<MatchWeightConfig>(`/job-orders/match-weights/defaults?job_type=${encodeURIComponent(jt)}`)
+      .then((weights) => {
+        if (cancelled) return;
+        setDefaultMatchWeights(weights);
+        if (!customizeMatchWeights) setMatchWeights(weights);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setDefaultMatchWeights(DEFAULT_MATCH_WEIGHTS);
+        if (!customizeMatchWeights) setMatchWeights(DEFAULT_MATCH_WEIGHTS);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [customizeMatchWeights, jobType]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -157,6 +185,7 @@ export function JobOrderForm({ t, mode, organizations = [], onSuccess, lightMode
       special_instructions: special.trim() || null,
       geofence_radius_m: Math.max(0, parseInt(geofence, 10) || 200),
       acceptance_window_minutes: Math.max(1, parseInt(acceptanceMins, 10) || 120),
+      match_weights: customizeMatchWeights ? matchWeights : null,
       shifts: shifts.map((s) => ({
         starts_at: new Date(s.starts_local).toISOString(),
         ends_at: new Date(s.ends_local).toISOString(),
@@ -309,6 +338,31 @@ export function JobOrderForm({ t, mode, organizations = [], onSuccess, lightMode
       <div>
         <label className={labelClass}>{t("job_form_special_instructions")}</label>
         <textarea className={`${inputClass} min-h-[80px]`} value={special} onChange={(e) => setSpecial(e.target.value)} />
+      </div>
+
+      <div className={sectionBox}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className={sectionTitle}>{t("job_match_weights_title")}</h3>
+            <p className={hint}>{t("job_match_weights_hint")}</p>
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={customizeMatchWeights}
+              onChange={(e) => {
+                const checked = e.target.checked;
+                setCustomizeMatchWeights(checked);
+                if (checked) setMatchWeights(defaultMatchWeights);
+              }}
+            />
+            {t("job_match_weights_customize")}
+          </label>
+        </div>
+        <MatchWeightFields t={t} value={matchWeights} onChange={setMatchWeights} disabled={!customizeMatchWeights} />
+        <p className={hint}>
+          {customizeMatchWeights ? t("job_match_weights_override_active") : t("job_match_weights_using_defaults")}
+        </p>
       </div>
 
       <div className={sectionBox}>

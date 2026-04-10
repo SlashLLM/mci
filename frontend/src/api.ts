@@ -114,6 +114,8 @@ export async function api<T>(
       ...init,
       headers,
       body: init.json !== undefined ? JSON.stringify(init.json) : init.body,
+      // Authenticated JSON APIs must not reuse cached GET bodies after mutations (e.g. TA worker directory).
+      cache: init.cache ?? "no-store",
     });
 
   let res = await doFetch(BASE);

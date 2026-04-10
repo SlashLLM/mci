@@ -13,6 +13,7 @@ import { SkillMultiPicker } from "../../components/skills/SkillMultiPicker";
 import { isAllowedJobType, JOB_TYPES } from "../../constants/jobTypes";
 import WorkerPortalLayout from "../../components/worker/WorkerPortalLayout";
 import WorkerOnboardingPage from "./WorkerOnboardingPage";
+import NotificationsPage from "../../components/portal/NotificationsPage";
 
 function MatIcon({ name, className = "" }: { name: string; className?: string }) {
   return <span className={`material-symbols-outlined ${className}`.trim()}>{name}</span>;
@@ -107,6 +108,12 @@ type AssignmentRow = {
   shift: { id: number; starts_at: string; ends_at: string; job_title: string };
 };
 
+type WorkerSchedulePayload = {
+  confirmed: AssignmentRow[];
+  pending_applications: AssignmentRow[];
+  past_shifts: AssignmentRow[];
+};
+
 type TimesheetRow = {
   id: number;
   gross_pay: number;
@@ -193,6 +200,7 @@ function OffersHome() {
   const [offers, setOffers] = useState<OfferRow[]>([]);
   const [marketplace, setMarketplace] = useState<MarketplaceShift[]>([]);
   const [timesheets, setTimesheets] = useState<TimesheetRow[]>([]);
+  const [workerAccountStatus, setWorkerAccountStatus] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -201,12 +209,14 @@ function OffersHome() {
       api<OfferRow[]>("/worker/offers").catch(() => [] as OfferRow[]),
       api<MarketplaceShift[]>("/worker/marketplace/shifts").catch(() => [] as MarketplaceShift[]),
       api<TimesheetRow[]>("/timesheets").catch(() => [] as TimesheetRow[]),
+      api<WorkerProfileSnapshot>("/workers/me/profile").catch(() => null),
     ])
-      .then(([o, m, ts]) => {
+      .then(([o, m, ts, prof]) => {
         if (!cancelled) {
           setOffers(o);
           setMarketplace(m);
           setTimesheets(ts);
+          setWorkerAccountStatus(prof?.status ?? null);
         }
       })
       .catch((e) => {
@@ -240,6 +250,9 @@ function OffersHome() {
         extra={<PendingPayoutCard amount={pendingPayout} />}
       />
       {err && <p className="mb-6 text-sm text-error">{err}</p>}
+      {workerAccountStatus === "blacklisted" && (
+        <p className="mb-6 rounded-xl border border-error/40 bg-error/10 px-4 py-3 text-sm text-error">{t("worker_marketplace_blacklisted")}</p>
+      )}
 
       <section className="mb-16 grid grid-cols-1 gap-8 lg:grid-cols-12">
         <div className="relative overflow-hidden rounded-[2rem] border border-outline-variant/10 bg-surface-container-lowest p-8 shadow-sm transition-all duration-500 hover:shadow-xl md:p-10 lg:col-span-8">
@@ -374,7 +387,7 @@ function OffersHome() {
         </div>
       </section>
 
-      <MarketplaceSection shifts={gridShifts} showTitle />
+      <MarketplaceSection shifts={gridShifts} showTitle accountBlacklisted={workerAccountStatus === "blacklisted"} />
     </div>
   );
 }
@@ -385,12 +398,14 @@ function MarketplaceSection({
   maxKm,
   onMaxKmChange,
   locationHint,
+  accountBlacklisted,
 }: {
   shifts: MarketplaceShift[];
   showTitle?: boolean;
   maxKm?: string;
   onMaxKmChange?: (v: string) => void;
   locationHint?: ReactNode;
+  accountBlacklisted?: boolean;
 }) {
   const { t } = useTranslation();
   const [q, setQ] = useState("");
@@ -509,6 +524,9 @@ function MarketplaceSection({
         </div>
       )}
       {locationHint && <p className="mb-4 text-sm text-on-surface-variant">{locationHint}</p>}
+      {accountBlacklisted && (
+        <p className="mb-4 rounded-xl border border-error/40 bg-error/10 px-4 py-3 text-sm text-error">{t("worker_marketplace_blacklisted")}</p>
+      )}
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
         {filtered.map((s, i) => {
           const distLabel = fmtDistanceKm(s.distance_m, t);
@@ -552,7 +570,11 @@ function MarketplaceSection({
           );
         })}
       </div>
-      {filtered.length === 0 && <p className="mt-8 text-center text-on-surface-variant">No shifts match your search.</p>}
+      {filtered.length === 0 && (
+        <p className="mt-8 text-center text-on-surface-variant">
+          {accountBlacklisted ? t("worker_marketplace_blacklisted") : t("marketplace_no_match")}
+        </p>
+      )}
     </section>
   );
 }
@@ -560,6 +582,7 @@ function MarketplaceSection({
 function MarketplacePage() {
   const { t } = useTranslation();
   const [rows, setRows] = useState<MarketplaceShift[]>([]);
+  const [profile, setProfile] = useState<WorkerProfileSnapshot | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [maxKm, setMaxKm] = useState("");
 
@@ -570,10 +593,14 @@ function MarketplacePage() {
     const suffix =
       v !== "" && Number.isFinite(n) && n > 0 ? `?max_km=${encodeURIComponent(String(n))}` : "";
     setErr(null);
-    api<MarketplaceShift[]>(`/worker/marketplace/shifts${suffix}`)
-      .then((r) => {
+    Promise.all([
+      api<MarketplaceShift[]>(`/worker/marketplace/shifts${suffix}`),
+      api<WorkerProfileSnapshot>("/workers/me/profile").catch(() => null),
+    ])
+      .then(([r, p]) => {
         if (!cancelled) {
           setRows(r);
+          setProfile(p);
           setErr(null);
         }
       })
@@ -604,7 +631,13 @@ function MarketplacePage() {
         description="Search and review shifts matched to your profile. Apply from your offers when employers send them."
       />
       {err && <p className="mb-6 text-sm text-error">{err}</p>}
-      <MarketplaceSection shifts={rows} maxKm={maxKm} onMaxKmChange={setMaxKm} locationHint={locationHint} />
+      <MarketplaceSection
+        shifts={rows}
+        maxKm={maxKm}
+        onMaxKmChange={setMaxKm}
+        locationHint={locationHint}
+        accountBlacklisted={profile?.status === "blacklisted"}
+      />
     </div>
   );
 }
@@ -623,20 +656,33 @@ function MarketplaceShiftDetailPage() {
   const { shiftId } = useParams<{ shiftId: string }>();
   const id = shiftId ? Number.parseInt(shiftId, 10) : NaN;
   const [rows, setRows] = useState<MarketplaceShift[]>([]);
+  const [workerAccountStatus, setWorkerAccountStatus] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionErr, setActionErr] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
 
   function reloadShifts() {
-    return api<MarketplaceShift[]>("/worker/marketplace/shifts").then(setRows);
+    return Promise.all([
+      api<MarketplaceShift[]>("/worker/marketplace/shifts"),
+      api<WorkerProfileSnapshot>("/workers/me/profile").catch(() => null),
+    ]).then(([r, p]) => {
+      setRows(r);
+      setWorkerAccountStatus(p?.status ?? null);
+    });
   }
 
   useEffect(() => {
     let cancelled = false;
-    api<MarketplaceShift[]>("/worker/marketplace/shifts")
-      .then((r) => {
-        if (!cancelled) setRows(r);
+    Promise.all([
+      api<MarketplaceShift[]>("/worker/marketplace/shifts"),
+      api<WorkerProfileSnapshot>("/workers/me/profile").catch(() => null),
+    ])
+      .then(([r, p]) => {
+        if (!cancelled) {
+          setRows(r);
+          setWorkerAccountStatus(p?.status ?? null);
+        }
       })
       .catch((e) => {
         if (!cancelled) setErr(String(e));
@@ -651,6 +697,7 @@ function MarketplaceShiftDetailPage() {
 
   const shift = Number.isFinite(id) ? rows.find((s) => s.shift_id === id) : undefined;
   const hasApplied = shift?.my_application_status === "applied";
+  const accountBlacklisted = workerAccountStatus === "blacklisted";
 
   async function handleApply() {
     if (!shift) return;
@@ -697,7 +744,18 @@ function MarketplaceShiftDetailPage() {
 
       {loading && <p className="text-on-surface-variant">Loading…</p>}
       {err && !loading && <p className="text-sm text-error">{err}</p>}
-      {!loading && !err && !shift && (
+      {!loading && !err && !shift && accountBlacklisted && (
+        <div className="rounded-2xl border border-error/30 bg-error/10 p-8">
+          <p className="text-error">{t("worker_marketplace_blacklisted")}</p>
+          <Link
+            to="/worker/marketplace"
+            className="mt-6 inline-flex rounded-xl bg-primary px-6 py-3 font-bold text-on-primary hover:bg-primary-dim"
+          >
+            {t("marketplace_back")}
+          </Link>
+        </div>
+      )}
+      {!loading && !err && !shift && !accountBlacklisted && (
         <div className="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-8">
           <p className="text-on-surface-variant">
             This shift is not available in your marketplace list anymore. It may have been filled or updated.
@@ -706,7 +764,7 @@ function MarketplaceShiftDetailPage() {
             to="/worker/marketplace"
             className="mt-6 inline-flex rounded-xl bg-primary px-6 py-3 font-bold text-on-primary hover:bg-primary-dim"
           >
-            Back to marketplace
+            {t("marketplace_back")}
           </Link>
         </div>
       )}
@@ -756,13 +814,16 @@ function MarketplaceShiftDetailPage() {
               </p>
             </div>
             {actionErr && <p className="text-sm text-error">{actionErr}</p>}
+            {accountBlacklisted && (
+              <p className="rounded-xl border border-error/40 bg-error/10 p-4 text-sm text-error">{t("worker_marketplace_blacklisted")}</p>
+            )}
             {hasApplied && (
               <p className="rounded-xl bg-amber-50 p-4 text-sm text-amber-950 dark:bg-amber-900/30 dark:text-amber-100">
                 {t("marketplace_detail_applied_pending")}
               </p>
             )}
             <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-              {!hasApplied ? (
+              {!hasApplied && !accountBlacklisted ? (
                 <button
                   type="button"
                   disabled={actionBusy}
@@ -936,11 +997,43 @@ function HistoryPage() {
 
 function ShiftsPage() {
   const { t } = useTranslation();
-  const [rows, setRows] = useState<AssignmentRow[]>([]);
+  const [data, setData] = useState<WorkerSchedulePayload>({
+    confirmed: [],
+    pending_applications: [],
+    past_shifts: [],
+  });
   const [err, setErr] = useState<string | null>(null);
+
+  function ymd(iso: string): string {
+    try {
+      return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(iso));
+    } catch {
+      return iso.slice(0, 10);
+    }
+  }
+
+  function fmtTimeRange(startIso: string, endIso: string): string {
+    try {
+      const f = new Intl.DateTimeFormat(undefined, { timeStyle: "short" });
+      return `${f.format(new Date(startIso))} - ${f.format(new Date(endIso))}`;
+    } catch {
+      return `${startIso} - ${endIso}`;
+    }
+  }
+
+  const groupedConfirmed = useMemo(() => {
+    const byDay = new Map<string, AssignmentRow[]>();
+    for (const row of data.confirmed) {
+      const key = row.shift.starts_at.slice(0, 10);
+      if (!byDay.has(key)) byDay.set(key, []);
+      byDay.get(key)!.push(row);
+    }
+    return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [data.confirmed]);
+
   useEffect(() => {
-    api<AssignmentRow[]>("/worker/my-shifts")
-      .then(setRows)
+    api<WorkerSchedulePayload>("/worker/schedule")
+      .then(setData)
       .catch((e) => setErr(String(e)));
   }, []);
   return (
@@ -951,36 +1044,61 @@ function ShiftsPage() {
         description={t("my_shifts_description")}
       />
       {err && <p className="mb-6 text-sm text-error">{err}</p>}
-      <ul className="space-y-4">
-        {rows.map((s) => (
-          <li
-            key={s.assignment_id}
-            className="flex flex-col gap-3 rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-6 shadow-sm sm:flex-row sm:items-center sm:justify-between"
-          >
-            <div>
-              <p className="font-headline text-lg font-bold">{s.shift.job_title}</p>
-              <p className="text-sm text-on-surface-variant">
-                {fmtDate(s.shift.starts_at)} — {fmtDate(s.shift.ends_at)}
-              </p>
-              <p className="mt-1 text-xs text-on-surface-variant">Assignment #{s.assignment_id}</p>
-            </div>
-            <div className="flex flex-col items-stretch gap-2 sm:items-end">
-              {s.status === "confirmed" && (
-                <Link
-                  to={`/worker/clock?assignment=${s.assignment_id}`}
-                  className="inline-flex justify-center rounded-xl bg-primary px-4 py-2 text-center text-sm font-semibold text-on-primary hover:bg-primary-dim"
-                >
-                  {t("my_shifts_clock_in")}
-                </Link>
-              )}
-              <span className="inline-flex w-fit rounded-full bg-primary-container px-4 py-1.5 text-sm font-semibold text-on-primary-container">
-                {s.status === "applied" ? t("worker_history_bucket_pending") : s.status}
-              </span>
-            </div>
-          </li>
-        ))}
-      </ul>
-      {rows.length === 0 && !err && <p className="text-on-surface-variant">No assignments yet.</p>}
+      <section className="space-y-8">
+        <div>
+          <h2 className="mb-4 text-lg font-bold">{t("worker_schedule_confirmed_heading", { defaultValue: "Confirmed shifts" })}</h2>
+          {groupedConfirmed.length === 0 && <p className="text-sm text-on-surface-variant">No confirmed shifts yet.</p>}
+          <div className="space-y-4">
+            {groupedConfirmed.map(([day, items]) => (
+              <div key={day} className="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-5 shadow-sm">
+                <p className="mb-3 text-sm font-semibold text-primary">{ymd(`${day}T12:00:00`)}</p>
+                <ul className="space-y-3">
+                  {items.map((s) => (
+                    <li key={s.assignment_id} className="flex flex-col gap-2 rounded-xl bg-surface-container-low p-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="font-semibold">{s.shift.job_title}</p>
+                        <p className="text-xs text-on-surface-variant">{fmtTimeRange(s.shift.starts_at, s.shift.ends_at)}</p>
+                      </div>
+                      <Link
+                        to={`/worker/clock?assignment=${s.assignment_id}`}
+                        className="inline-flex justify-center rounded-xl bg-primary px-4 py-2 text-center text-sm font-semibold text-on-primary hover:bg-primary-dim"
+                      >
+                        {t("my_shifts_clock_in")}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <h2 className="mb-4 text-lg font-bold">{t("worker_schedule_pending_heading", { defaultValue: "Pending applications" })}</h2>
+          {data.pending_applications.length === 0 && <p className="text-sm text-on-surface-variant">No pending applications.</p>}
+          <ul className="space-y-3">
+            {data.pending_applications.map((s) => (
+              <li key={s.assignment_id} className="rounded-xl border border-outline-variant/10 bg-surface-container-lowest p-4">
+                <p className="font-semibold">{s.shift.job_title}</p>
+                <p className="text-xs text-on-surface-variant">{fmtDate(s.shift.starts_at)} · {s.status}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <div>
+          <h2 className="mb-4 text-lg font-bold">{t("worker_schedule_past_heading", { defaultValue: "Past shifts" })}</h2>
+          {data.past_shifts.length === 0 && <p className="text-sm text-on-surface-variant">No past shifts yet.</p>}
+          <ul className="space-y-3">
+            {data.past_shifts.map((s) => (
+              <li key={s.assignment_id} className="rounded-xl border border-outline-variant/10 bg-surface-container-lowest p-4">
+                <p className="font-semibold">{s.shift.job_title}</p>
+                <p className="text-xs text-on-surface-variant">{fmtDate(s.shift.starts_at)} · {s.status}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </section>
     </div>
   );
 }
@@ -1582,6 +1700,7 @@ type ProfileCompletenessItem = { id: string; done: boolean; required_for_complia
 type ProfileCompletenessPayload = { profile_completeness_pct: number; items: ProfileCompletenessItem[] };
 
 type WorkerProfileSnapshot = {
+  status?: string;
   full_name: string;
   phone: string;
   email: string | null;
@@ -1600,6 +1719,7 @@ type WorkerProfileSnapshot = {
 
 type WorkerReputation = {
   rating_avg: number;
+  points: number;
   tier: string;
   ratings: Array<{
     stars: number;
@@ -1928,6 +2048,41 @@ function ReputationTab() {
   if (err) return <p className="text-sm text-error">{err}</p>;
   if (!data) return <p className="text-on-surface-variant">{t("settings_loading")}</p>;
 
+  const tierLabelKey =
+    data.tier === "elite"
+      ? "worker_profile_tier_elite"
+      : data.tier === "preferred"
+        ? "worker_profile_tier_preferred"
+        : data.tier === "probation"
+          ? "worker_profile_tier_probation"
+          : "worker_profile_tier_standard";
+  const tierGuide = [
+    {
+      id: "probation",
+      label: t("worker_profile_tier_probation"),
+      range: t("worker_profile_tier_range_probation"),
+      benefit: t("worker_profile_tier_benefit_probation"),
+    },
+    {
+      id: "standard",
+      label: t("worker_profile_tier_standard"),
+      range: t("worker_profile_tier_range_standard"),
+      benefit: t("worker_profile_tier_benefit_standard"),
+    },
+    {
+      id: "preferred",
+      label: t("worker_profile_tier_preferred"),
+      range: t("worker_profile_tier_range_preferred"),
+      benefit: t("worker_profile_tier_benefit_preferred"),
+    },
+    {
+      id: "elite",
+      label: t("worker_profile_tier_elite"),
+      range: t("worker_profile_tier_range_elite"),
+      benefit: t("worker_profile_tier_benefit_elite"),
+    },
+  ];
+
   return (
     <div className="space-y-6">
       <div className="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-6 shadow-sm">
@@ -1937,10 +2092,34 @@ function ReputationTab() {
             <dd className="text-2xl font-bold text-on-surface">{data.rating_avg.toFixed(1)} / 5</dd>
           </div>
           <div>
+            <dt className="text-xs font-medium text-on-surface-variant">{t("worker_profile_points")}</dt>
+            <dd className="text-2xl font-bold text-on-surface">{data.points}</dd>
+          </div>
+          <div>
             <dt className="text-xs font-medium text-on-surface-variant">{t("worker_profile_tier")}</dt>
-            <dd className="text-lg font-semibold capitalize text-on-surface">{data.tier}</dd>
+            <dd className="text-lg font-semibold text-on-surface">{t(tierLabelKey)}</dd>
           </div>
         </dl>
+        <p className="mt-4 text-sm text-on-surface-variant">{t("worker_profile_points_help")}</p>
+      </div>
+      <div className="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-6 shadow-sm">
+        <h2 className="mb-4 text-sm font-semibold text-on-surface">{t("worker_profile_tier_benefits_heading")}</h2>
+        <ul className="grid gap-3 md:grid-cols-2">
+          {tierGuide.map((tier) => (
+            <li
+              key={tier.id}
+              className={`rounded-xl border p-4 ${
+                tier.id === data.tier
+                  ? "border-primary/40 bg-primary-container/20"
+                  : "border-outline-variant/15 bg-surface-container-low"
+              }`}
+            >
+              <p className="font-semibold text-on-surface">{tier.label}</p>
+              <p className="mt-1 text-xs text-on-surface-variant">{tier.range}</p>
+              <p className="mt-2 text-sm text-on-surface-variant">{tier.benefit}</p>
+            </li>
+          ))}
+        </ul>
       </div>
       <div className="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-6 shadow-sm">
         <h2 className="mb-4 text-sm font-semibold text-on-surface">{t("worker_profile_recent_ratings")}</h2>
@@ -2045,6 +2224,7 @@ export default function WorkerApp() {
         <Route path="marketplace/:shiftId" element={<MarketplaceShiftDetailPage />} />
         <Route path="history" element={<HistoryPage />} />
         <Route path="shifts" element={<ShiftsPage />} />
+        <Route path="notifications" element={<NotificationsPage />} />
         <Route path="profile" element={<WorkerProfilePage />} />
         <Route path="settings" element={<Navigate to="/worker/profile?tab=account" replace />} />
         <Route path="earnings" element={<EarningsPage />} />

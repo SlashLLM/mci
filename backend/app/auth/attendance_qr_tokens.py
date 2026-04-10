@@ -1,6 +1,7 @@
 """Signed JWTs embedded in client-displayed QR codes for shift clock-in/out."""
 
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from jose import jwt
 
@@ -34,6 +35,8 @@ def create_attendance_qr_token(
         "action": action,
         "exp": exp,
         "aud": ATTENDANCE_QR_AUD,
+        # Ensure each regeneration yields a fresh token even within the same second.
+        "jti": str(uuid4()),
     }
     return jwt.encode(to_encode, settings.secret_key, algorithm=ALGORITHM)
 

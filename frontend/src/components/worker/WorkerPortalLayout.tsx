@@ -11,6 +11,7 @@ export default function WorkerPortalLayout({ children }: { children: ReactNode }
       sideNav={[
         { to: "/worker/marketplace", labelKey: "marketplace", icon: "storefront" },
         { to: "/worker/shifts", labelKey: "my_shifts", icon: "event_available" },
+        { to: "/worker/notifications", labelKey: "notifications_title", icon: "notifications" },
         { to: "/worker/history", labelKey: "worker_history_title", icon: "history" },
         { to: "/worker/earnings", labelKey: "worker_earnings_nav", icon: "payments" },
         { to: "/worker/profile", labelKey: "profile", icon: "person_outline" },
