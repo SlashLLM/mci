@@ -188,6 +188,8 @@ _HISTORY_STATUSES_ALL: tuple[AssignmentStatus, ...] = (
     AssignmentStatus.waitlisted,
     AssignmentStatus.applied,
     AssignmentStatus.rejected,
+    AssignmentStatus.cancelled,
+    AssignmentStatus.no_show,
 )
 
 
@@ -230,7 +232,7 @@ def _history_bucket_for_status(st: AssignmentStatus) -> str:
         return "waitlisted"
     if st == AssignmentStatus.applied:
         return "pending"
-    if st == AssignmentStatus.rejected:
+    if st in (AssignmentStatus.rejected, AssignmentStatus.cancelled, AssignmentStatus.no_show):
         return "rejected"
     return st.value
 
@@ -703,6 +705,7 @@ async def worker_schedule(
                     AssignmentStatus.completed,
                     AssignmentStatus.cancelled,
                     AssignmentStatus.rejected,
+                    AssignmentStatus.no_show,
                 )
             ),
         )
@@ -740,7 +743,7 @@ async def worker_schedule(
         for a in rows
         if _as_utc(a.shift.ends_at) < now
         or _effective_assignment_status(a, now=now)
-        in (AssignmentStatus.completed, AssignmentStatus.cancelled, AssignmentStatus.rejected)
+        in (AssignmentStatus.completed, AssignmentStatus.cancelled, AssignmentStatus.rejected, AssignmentStatus.no_show)
     ]
     return {
         "confirmed": confirmed,
