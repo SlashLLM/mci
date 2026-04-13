@@ -98,7 +98,7 @@ async def test_declined_hidden_when_worker_has_confirmed_assignment(sqlite_sessi
     )
     await sqlite_session.commit()
 
-    accepted, declined = await _accepted_and_declined_for_job(sqlite_session, job.id)
+    accepted, declined = await _accepted_and_declined_for_job(sqlite_session, job)
     assert len(accepted) == 1
     assert accepted[0].worker_profile_id == wp.id
     assert declined == []
@@ -157,7 +157,7 @@ async def test_declined_shown_when_no_assignment(sqlite_session: AsyncSession):
     )
     await sqlite_session.commit()
 
-    accepted, declined = await _accepted_and_declined_for_job(sqlite_session, job.id)
+    accepted, declined = await _accepted_and_declined_for_job(sqlite_session, job)
     assert accepted == []
     assert len(declined) == 1
     assert declined[0].worker_profile_id == wp.id

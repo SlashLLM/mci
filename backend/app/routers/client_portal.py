@@ -38,6 +38,12 @@ from app.services.worker_ratings import upsert_client_rating_for_assignment
 router = APIRouter(prefix="/client", tags=["client-portal"])
 
 
+def _dt_as_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _client_profile_flags(cp: ClientProfile) -> dict[str, bool]:
     return {
         "company_name": bool(cp.company_name and cp.company_name.strip()),
@@ -330,7 +336,7 @@ async def live_attendance(
     r = await db.execute(select(Shift).where(Shift.job_order_id == job_id))
     shifts = r.scalars().all()
     now = datetime.now(timezone.utc)
-    active = [s for s in shifts if s.starts_at <= now <= s.ends_at]
+    active = [s for s in shifts if _dt_as_utc(s.starts_at) <= now <= _dt_as_utc(s.ends_at)]
     if not active:
         active = shifts[-1:] if shifts else []
     out = []
