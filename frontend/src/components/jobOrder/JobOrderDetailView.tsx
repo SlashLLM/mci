@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { QRCodeSVG } from "qrcode.react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { api } from "../../api";
+import { formatSgd } from "../../utils/timesheetFormat";
 import { CertificationMultiPicker } from "../certifications/CertificationMultiPicker";
 import { SkillMultiPicker } from "../skills/SkillMultiPicker";
 import { JobStatusBadge } from "./jobOrderStatus";
@@ -662,7 +663,7 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
                 <div className="rounded-xl border border-outline-variant/20 p-3">
                   <p className="text-xs text-on-surface-variant">{t("job_detail_pay")}</p>
                   <p className="text-xl font-extrabold text-primary">
-                    {job.hourly_rate != null ? `$${job.hourly_rate}` : job.per_shift_rate != null ? `$${job.per_shift_rate}` : "—"}
+                    {job.hourly_rate != null ? formatSgd(job.hourly_rate) : job.per_shift_rate != null ? formatSgd(job.per_shift_rate) : "—"}
                   </p>
                 </div>
               </div>

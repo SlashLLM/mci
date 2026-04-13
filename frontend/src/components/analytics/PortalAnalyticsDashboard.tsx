@@ -169,7 +169,7 @@ function num(v: number) {
 }
 
 function money(v: number) {
-  return `$${new Intl.NumberFormat(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(v)}`;
+  return `SGD ${new Intl.NumberFormat(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(v)}`;
 }
 
 function hourText(v: number) {

@@ -28,7 +28,7 @@ function fmtDate(iso: string) {
 }
 
 function fmtMoney(n: number) {
-  return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" }).format(n);
+  return `SGD ${Number(n || 0).toFixed(2)}`;
 }
 
 type ClockNoticeKind = "error" | "warning" | "success" | "info";

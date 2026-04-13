@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { NavLink, useNavigate } from "react-router-dom";
 import { api, apiUrl, getToken } from "../../api";
 import { ClientPortalLayout } from "../../components/client/ClientPortalLayout";
-import { fmtShiftDate, formatTimesheetRate } from "../../utils/timesheetFormat";
+import { fmtShiftDate, formatSgd, formatTimesheetRate } from "../../utils/timesheetFormat";
 import { JobOrderForm } from "../../components/jobOrder/JobOrderForm";
 import { jobStatusLabelKey } from "../../components/jobOrder/jobOrderStatus";
 
@@ -703,7 +703,7 @@ export function ClientTimesheetsPage() {
                                       })
                                     : "—"}
                                 </td>
-                                <td className="px-3 py-2 font-semibold">${x.gross_pay.toFixed(2)}</td>
+                                <td className="px-3 py-2 font-semibold">{formatSgd(x.gross_pay)}</td>
                                 <td className="px-3 py-2 text-on-surface-variant">{fmtTsIso(x.clock_in_at)}</td>
                                 <td className="px-3 py-2 text-on-surface-variant">{fmtTsIso(x.clock_out_at)}</td>
                                 <td className="px-3 py-2">
