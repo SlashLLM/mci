@@ -117,12 +117,21 @@ def _locale_from_request(locale: str | None) -> str:
     return "en"
 
 
+async def _find_user_by_email(db: AsyncSession, email: str) -> User | None:
+    result = await db.execute(select(User).where(func.lower(User.email) == email))
+    return result.scalar_one_or_none()
+
+
 @router.post("/worker/email-otp/request")
-async def worker_email_otp_request(body: WorkerEmailOtpRequest):
+async def worker_email_otp_request(body: WorkerEmailOtpRequest, db: AsyncSession = Depends(get_db)):
     settings = get_settings()
     norm = _normalize_email(str(body.email))
     if not norm:
         raise HTTPException(status_code=400, detail="Invalid email")
+    if body.login_only:
+        user = await _find_user_by_email(db, norm)
+        if not user or user.role != UserRole.worker:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User does not exist")
     key = _otp_key_email(norm)
     has_key = bool((settings.resend_api_key or "").strip())
     has_from = bool((settings.resend_from_email or settings.email_from or "").strip())
@@ -177,8 +186,7 @@ async def worker_email_otp_verify(body: WorkerEmailOtpVerify, db: AsyncSession =
     if not await verify_otp(key, body.code):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired code")
 
-    result = await db.execute(select(User).where(func.lower(User.email) == norm))
-    user = result.scalar_one_or_none()
+    user = await _find_user_by_email(db, norm)
     if user:
         if user.role != UserRole.worker:
             raise HTTPException(
@@ -192,6 +200,8 @@ async def worker_email_otp_verify(body: WorkerEmailOtpVerify, db: AsyncSession =
         if wp and wp.status == WorkerStatus.inactive:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is inactive")
     else:
+        if body.login_only:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User does not exist")
         loc = _locale_from_request(body.locale)
         user = User(
             email=norm,
@@ -219,11 +229,15 @@ async def worker_email_otp_verify(body: WorkerEmailOtpVerify, db: AsyncSession =
 
 
 @router.post("/client/email-otp/request")
-async def client_email_otp_request(body: ClientEmailOtpRequest):
+async def client_email_otp_request(body: ClientEmailOtpRequest, db: AsyncSession = Depends(get_db)):
     settings = get_settings()
     norm = _normalize_email(str(body.email))
     if not norm:
         raise HTTPException(status_code=400, detail="Invalid email")
+    if body.login_only:
+        user = await _find_user_by_email(db, norm)
+        if not user or user.role != UserRole.client:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User does not exist")
     key = _otp_key_email(norm)
     if settings.otp_dev_mode:
         code = settings.otp_dev_code
@@ -259,8 +273,7 @@ async def client_email_otp_verify(body: ClientEmailOtpVerify, db: AsyncSession =
     if not await verify_otp(key, body.code):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired code")
 
-    result = await db.execute(select(User).where(func.lower(User.email) == norm))
-    user = result.scalar_one_or_none()
+    user = await _find_user_by_email(db, norm)
     if user:
         if user.role != UserRole.client:
             raise HTTPException(
@@ -270,6 +283,8 @@ async def client_email_otp_verify(body: ClientEmailOtpVerify, db: AsyncSession =
         if not user.is_active:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
     else:
+        if body.login_only:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User does not exist")
         loc = _locale_from_request(body.locale)
         org = ClientOrganization(name="New client organization")
         db.add(org)

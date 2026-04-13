@@ -9,6 +9,10 @@ function MatIcon({ name, className = "" }: { name: string; className?: string })
   return <span className={`material-symbols-outlined ${className}`.trim()} aria-hidden>{name}</span>;
 }
 
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 export default function LoginPage() {
   const { t, i18n } = useTranslation();
   const nav = useNavigate();
@@ -38,7 +42,7 @@ export default function LoginPage() {
       else if (r.role === "client") nav("/client");
       else nav("/ta");
     } catch (e) {
-      setMsg(String(e));
+      setMsg(errorMessage(e));
     } finally {
       setLoading(false);
     }
@@ -57,12 +61,12 @@ export default function LoginPage() {
       const endpoint = mode === "client" ? "/auth/client/email-otp/request" : "/auth/worker/email-otp/request";
       const r = await api<{ dev_code?: string | null }>(endpoint, {
         method: "POST",
-        json: { email: email.trim(), locale },
+        json: { email: email.trim(), locale, login_only: true },
       });
       if (r.dev_code) setDevHint(`Dev code: ${r.dev_code}`);
       setOtpStep("code");
     } catch (e) {
-      setMsg(String(e));
+      setMsg(errorMessage(e));
     } finally {
       setLoading(false);
     }
@@ -80,13 +84,13 @@ export default function LoginPage() {
       const endpoint = mode === "client" ? "/auth/client/email-otp/verify" : "/auth/worker/email-otp/verify";
       const r = await api<{ access_token: string; role: string }>(endpoint, {
         method: "POST",
-        json: { email: email.trim(), code: code.trim(), locale },
+        json: { email: email.trim(), code: code.trim(), locale, login_only: true },
       });
       setSession(r.access_token, r.role);
       if (r.role === "worker") nav("/worker");
       else nav("/client");
     } catch (e) {
-      setMsg(String(e));
+      setMsg(errorMessage(e));
     } finally {
       setLoading(false);
     }

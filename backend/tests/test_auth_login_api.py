@@ -245,3 +245,51 @@ def test_worker_email_otp_rejects_inactive_worker_profile(auth_client):
         json={"email": "inactive.wp@example.com", "code": "123456"},
     )
     assert r.status_code == 403
+
+
+def test_worker_email_login_request_rejects_unknown_email(auth_client):
+    client, _Session = auth_client
+    r = client.post(
+        "/auth/worker/email-otp/request",
+        json={"email": "missing.worker@example.com", "login_only": True},
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"] == "User does not exist"
+
+
+def test_worker_email_login_verify_rejects_unknown_email(auth_client):
+    client, _Session = auth_client
+    client.post(
+        "/auth/worker/email-otp/request",
+        json={"email": "missing.worker@example.com"},
+    )
+    r = client.post(
+        "/auth/worker/email-otp/verify",
+        json={"email": "missing.worker@example.com", "code": "123456", "login_only": True},
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"] == "User does not exist"
+
+
+def test_client_email_login_request_rejects_unknown_email(auth_client):
+    client, _Session = auth_client
+    r = client.post(
+        "/auth/client/email-otp/request",
+        json={"email": "missing.client@example.com", "login_only": True},
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"] == "User does not exist"
+
+
+def test_client_email_login_verify_rejects_unknown_email(auth_client):
+    client, _Session = auth_client
+    client.post(
+        "/auth/client/email-otp/request",
+        json={"email": "missing.client@example.com"},
+    )
+    r = client.post(
+        "/auth/client/email-otp/verify",
+        json={"email": "missing.client@example.com", "code": "123456", "login_only": True},
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"] == "User does not exist"
