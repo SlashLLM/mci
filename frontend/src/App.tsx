@@ -190,19 +190,19 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      <header className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-slate-800 bg-slate-950/90 px-4 py-3 backdrop-blur">
+    <div className="min-h-screen bg-white text-black">
+      <header className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-black/10 bg-white px-4 py-3">
         <button
           type="button"
-          className="text-left font-semibold text-sky-400"
+          className="text-left font-semibold text-black"
           onClick={() => navigate("/")}
         >
           {t("app_title")}
         </button>
         <div className="flex items-center gap-2">
-          <label className="sr-only text-xs text-slate-400">{t("language")}</label>
+          <label className="sr-only text-xs text-[#4b4b4b]">{t("language")}</label>
           <select
-            className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-1 text-sm"
+            className="rounded-pill border border-black bg-white px-3 py-1 text-sm"
             value={i18n.language.startsWith("zh") ? "zh" : "en"}
             onChange={(e) => {
               const lng = e.target.value;
@@ -216,7 +216,7 @@ export default function App() {
           {getToken() && (
             <button
               type="button"
-              className="text-xs text-slate-400 underline"
+              className="text-xs text-[#4b4b4b] underline"
               onClick={() => {
                 clearSession();
                 navigate("/");

@@ -49,10 +49,17 @@ export default function NotificationsPage() {
       <h1 className="font-headline text-3xl md:text-4xl font-extrabold tracking-tight text-on-surface mb-2">
         {t("notifications_title")}
       </h1>
-      <p className="text-sm text-on-surface-variant mb-8">{t("notifications_empty")}</p>
+      <p className="text-sm text-on-surface-variant mb-8">Stay updated with your latest platform activity.</p>
       {loading && <p className="text-sm text-on-surface-variant">{t("notifications_loading")}</p>}
       {err && <p className="text-sm text-error">{err}</p>}
-      {!loading && !err && rows.length === 0 && <p className="text-sm text-on-surface-variant">{t("notifications_empty")}</p>}
+      {!loading && !err && rows.length === 0 && (
+        <div className="flex min-h-[45vh] items-center justify-center">
+          <section className="w-full max-w-md rounded-2xl bg-black px-6 py-8 text-center shadow-medium">
+            <h2 className="text-lg font-semibold text-white">{t("notifications_empty")}</h2>
+            <p className="mt-2 text-sm text-white/80">New alerts and updates will appear here as soon as they arrive.</p>
+          </section>
+        </div>
+      )}
       {!loading && !err && rows.length > 0 && (
         <ul className="space-y-3">
           {rows.map((n) => (

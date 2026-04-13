@@ -15,10 +15,12 @@ from app.models import (
     JobOrder,
     JobOrderStatus,
     MarketplaceShiftDismissal,
+    PaymentRecord,
     Shift,
     ShiftAssignment,
     ShiftOffer,
     ShiftOfferStatus,
+    TimesheetEntry,
     User,
     UserRole,
     WorkerProfile,
@@ -139,6 +141,30 @@ async def _auto_notify_next_waitlisted_worker(db: AsyncSession, shift_id: int, c
             "cancelled_assignment_id": cancelled_assignment_id,
         },
     )
+
+
+async def _late_cancellation_stakeholder_user_ids(db: AsyncSession, job: JobOrder) -> list[int]:
+    """Client org users plus the contracted TA (if any), matching clock-event stakeholder rules."""
+    recipient_ids: set[int] = set()
+    r_clients = await db.execute(
+        select(User.id).where(
+            User.role == UserRole.client,
+            User.client_org_id == job.client_org_id,
+        )
+    )
+    recipient_ids.update(r_clients.scalars().all())
+    contract = await get_active_contract_for_org(db, job.client_org_id)
+    if contract:
+        r_ta = await db.execute(
+            select(User.id).where(
+                User.id == contract.ta_user_id,
+                User.role == UserRole.ta,
+            )
+        )
+        ta_id = r_ta.scalar_one_or_none()
+        if ta_id is not None:
+            recipient_ids.add(ta_id)
+    return list(recipient_ids)
 
 
 async def _decline_pending_offers_for_shift_worker(
@@ -773,6 +799,95 @@ async def worker_history(
     return out
 
 
+@router.get("/history/assignments/{assignment_id}")
+async def worker_history_assignment_detail(
+    assignment_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.worker))],
+):
+    """Full shift context for a history row, including timesheet and payout record when present."""
+    r = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
+    wp = r.scalar_one_or_none()
+    if not wp:
+        raise HTTPException(404)
+    r_a = await db.execute(
+        select(ShiftAssignment)
+        .options(selectinload(ShiftAssignment.shift).selectinload(Shift.job_order))
+        .where(ShiftAssignment.id == assignment_id, ShiftAssignment.worker_id == wp.id)
+    )
+    a = r_a.scalar_one_or_none()
+    if not a:
+        raise HTTPException(404)
+    now = datetime.now(timezone.utc)
+    effective_status = _effective_assignment_status(a, now=now)
+    history_bucket = _history_bucket_for_status(effective_status)
+    job = a.shift.job_order
+    if not job:
+        raise HTTPException(404)
+
+    r_ts = await db.execute(
+        select(TimesheetEntry, AttendanceRecord)
+        .outerjoin(AttendanceRecord, TimesheetEntry.attendance_record_id == AttendanceRecord.id)
+        .where(
+            TimesheetEntry.shift_assignment_id == assignment_id,
+            TimesheetEntry.worker_id == wp.id,
+        )
+        .order_by(TimesheetEntry.id.desc())
+        .limit(1)
+    )
+    ts_row = r_ts.first()
+    timesheet_payload = None
+    payment_payload = None
+    if ts_row:
+        t, att = ts_row
+        timesheet_payload = {
+            "id": t.id,
+            "status": t.status.value,
+            "gross_pay": t.gross_pay,
+            "scheduled_hours": t.scheduled_hours,
+            "actual_hours": t.actual_hours,
+            "overtime_hours": t.overtime_hours,
+            "hourly_rate_snapshot": t.hourly_rate_snapshot,
+            "per_shift_rate_snapshot": t.per_shift_rate_snapshot,
+            "dispute_flag": t.dispute_flag,
+            "clock_in_at": att.clock_in_time.isoformat() if att and att.clock_in_time else None,
+            "clock_out_at": att.clock_out_time.isoformat() if att and att.clock_out_time else None,
+        }
+        r_pr = await db.execute(select(PaymentRecord).where(PaymentRecord.worker_id == wp.id))
+        for pr in r_pr.scalars().all():
+            eids = pr.timesheet_entry_ids or []
+            if t.id in eids:
+                payment_payload = {
+                    "status": pr.payment_status.value,
+                    "paid_at": pr.paid_at.isoformat() if pr.paid_at else None,
+                }
+                break
+
+    return {
+        "assignment_id": a.id,
+        "assignment_status": effective_status.value,
+        "history_bucket": history_bucket,
+        "waitlist_rank": a.waitlist_rank,
+        "job": {
+            "id": job.id,
+            "title": job.title,
+            "job_type": job.job_type,
+            "location_address": job.location_address,
+            "hourly_rate": job.hourly_rate,
+            "per_shift_rate": job.per_shift_rate,
+            "pay_model": job.pay_model.value,
+        },
+        "shift": {
+            "id": a.shift.id,
+            "starts_at": a.shift.starts_at.isoformat(),
+            "ends_at": a.shift.ends_at.isoformat(),
+            "workers_required": a.shift.workers_required,
+        },
+        "timesheet": timesheet_payload,
+        "payment": payment_payload,
+    }
+
+
 @router.post("/assignments/{assignment_id}/cancel")
 async def cancel_assignment(
     assignment_id: int,
@@ -801,22 +916,23 @@ async def cancel_assignment(
         await adjust_worker_points(db, wp.id, POINTS_PENALTY_LATE_CANCEL)
     a.status = AssignmentStatus.cancelled
     job = await db.get(JobOrder, shift.job_order_id)
-    if is_late_cancellation:
-        ta_rows = await db.execute(select(User).where(User.role == UserRole.ta))
-        for ta_user in ta_rows.scalars().all():
-            await notify_user(
-                db,
-                ta_user.id,
-                title="Late cancellation alert",
-                body=f"Worker #{wp.id} cancelled assignment #{assignment_id} within {threshold_hours}h of shift start.",
-                payload={
-                    "type": "late_cancellation",
-                    "worker_profile_id": wp.id,
-                    "assignment_id": assignment_id,
-                    "shift_id": shift.id,
-                    "threshold_hours": threshold_hours,
-                },
-            )
-        await _auto_notify_next_waitlisted_worker(db, shift.id, assignment_id)
+    if is_late_cancellation and job:
+        worker_name = (wp.full_name or "").strip()
+        label = worker_name or f"Worker #{wp.id}"
+        body = (
+            f"{label} cancelled assignment #{assignment_id} for shift {shift.id} ({job.title}) "
+            f"within {threshold_hours}h of shift start."
+        )
+        payload = {
+            "type": "late_cancellation",
+            "worker_profile_id": wp.id,
+            "assignment_id": assignment_id,
+            "shift_id": shift.id,
+            "job_order_id": job.id,
+            "threshold_hours": threshold_hours,
+        }
+        for uid in await _late_cancellation_stakeholder_user_ids(db, job):
+            await notify_user(db, uid, title="Late cancellation alert", body=body, payload=payload)
+    await _auto_notify_next_waitlisted_worker(db, shift.id, assignment_id)
     await refresh_job_order_fill_status(db, job)
     return {"ok": True, "late_cancellation": is_late_cancellation, "threshold_hours": threshold_hours}

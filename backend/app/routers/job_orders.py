@@ -297,6 +297,7 @@ async def _accepted_and_declined_for_job(
                 location_lat=wp.location_lat,
                 location_lng=wp.location_lng,
                 is_preferred=is_preferred,
+                tier=wp.tier.value,
             )
         )
     accepted.sort(key=lambda x: (x.shift_starts_at, x.worker_name.lower()))

@@ -94,7 +94,7 @@ def dispute_setup():
                 overtime_hours=0.0,
                 hourly_rate_snapshot=20.0,
                 gross_pay=160.0,
-                status=TimesheetStatus.employer_endorsed,
+                status=TimesheetStatus.ta_verified,
             )
             paid_entry = TimesheetEntry(
                 job_order_id=job.id,
@@ -135,6 +135,7 @@ def dispute_setup():
     tokens = {
         "client": create_access_token(str(client_user_id), {}),
         "ta": create_access_token(str(ta_user_id), {}),
+        "worker": create_access_token(str(worker_user_id), {}),
     }
     try:
         with TestClient(_app) as client:
@@ -190,7 +191,7 @@ def test_dispute_requires_non_blank_comment(dispute_setup):
 
     entry = asyncio.run(check_entry())
     assert entry is not None
-    assert entry.status == TimesheetStatus.employer_endorsed
+    assert entry.status == TimesheetStatus.ta_verified
     assert entry.dispute_flag is False
 
 
@@ -222,3 +223,31 @@ def test_ta_with_active_contract_can_dispute(dispute_setup):
     assert entry is not None
     assert entry.status == TimesheetStatus.disputed
     assert entry.dispute_note == "Manual payroll review requested"
+
+
+def test_worker_list_timesheets_omits_disputed(dispute_setup):
+    client, _Session, tokens, _worker_user_id, disputable_entry_id, paid_entry_id = dispute_setup
+    worker_headers = {"Authorization": f"Bearer {tokens['worker']}"}
+
+    before = client.get("/timesheets", headers=worker_headers)
+    assert before.status_code == 200, before.text
+    ids_before = {row["id"] for row in before.json()}
+    assert disputable_entry_id in ids_before
+    assert paid_entry_id in ids_before
+
+    dispute = client.post(
+        f"/timesheets/{disputable_entry_id}/dispute",
+        headers={"Authorization": f"Bearer {tokens['client']}"},
+        json={"note": "Hours look wrong"},
+    )
+    assert dispute.status_code == 200, dispute.text
+
+    after = client.get("/timesheets", headers=worker_headers)
+    assert after.status_code == 200, after.text
+    ids_after = {row["id"] for row in after.json()}
+    assert disputable_entry_id not in ids_after
+    assert paid_entry_id in ids_after
+
+    client_view = client.get("/timesheets", headers={"Authorization": f"Bearer {tokens['client']}"})
+    assert client_view.status_code == 200, client_view.text
+    assert disputable_entry_id in {row["id"] for row in client_view.json()}

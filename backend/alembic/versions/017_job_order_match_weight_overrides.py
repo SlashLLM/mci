@@ -17,8 +17,16 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("job_orders", sa.Column("match_weight_overrides", sa.JSON(), nullable=True))
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    column_names = {column["name"] for column in inspector.get_columns("job_orders")}
+    if "match_weight_overrides" not in column_names:
+        op.add_column("job_orders", sa.Column("match_weight_overrides", sa.JSON(), nullable=True))
 
 
 def downgrade() -> None:
-    op.drop_column("job_orders", "match_weight_overrides")
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    column_names = {column["name"] for column in inspector.get_columns("job_orders")}
+    if "match_weight_overrides" in column_names:
+        op.drop_column("job_orders", "match_weight_overrides")

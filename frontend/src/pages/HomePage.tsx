@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router-dom";
 import PublicSiteLayout from "../components/portal/PublicSiteLayout";
+import { UberCard, UberLinkButton, UberSection } from "../components/ui/UberPrimitives";
 
 function MatIcon({ name, className = "" }: { name: string; className?: string }) {
   return <span className={`material-symbols-outlined ${className}`.trim()} aria-hidden>{name}</span>;
@@ -23,59 +23,50 @@ export default function HomePage() {
   ] as const;
 
   return (
-    <PublicSiteLayout mainClassName="max-w-7xl">
-      <section className="mb-14 md:mb-20">
-        <p className="mb-3 text-xs font-bold uppercase tracking-[0.2em] text-primary">{t("home_hero_eyebrow")}</p>
-        <h1 className="font-headline text-4xl font-extrabold tracking-tight text-on-background md:text-5xl lg:text-6xl">
+    <PublicSiteLayout mainClassName="max-w-[1136px]">
+      <UberSection className="mb-14 px-0 md:mb-20">
+        <p className="mb-3 text-xs font-bold uppercase tracking-[0.2em] text-black">{t("home_hero_eyebrow")}</p>
+        <h1 className="font-headline text-4xl font-extrabold tracking-tight text-black md:text-5xl lg:text-6xl">
           {t("home_hero_title")}
         </h1>
-        <p className="mt-5 max-w-2xl text-lg leading-relaxed text-on-surface-variant md:text-xl">{t("home_hero_subtitle")}</p>
-      </section>
+        <p className="mt-5 max-w-2xl text-lg leading-relaxed text-[#4b4b4b] md:text-xl">{t("home_hero_subtitle")}</p>
+      </UberSection>
 
-      <section className="mb-16 md:mb-24">
-        <h2 className="font-headline text-2xl font-extrabold text-on-background md:text-3xl">{t("home_about_title")}</h2>
-        <p className="mt-4 max-w-3xl text-base leading-relaxed text-on-surface-variant md:text-lg">{t("home_about_body")}</p>
-      </section>
+      <UberSection className="mb-16 px-0 md:mb-24">
+        <h2 className="font-headline text-2xl font-extrabold text-black md:text-3xl">{t("home_about_title")}</h2>
+        <p className="mt-4 max-w-3xl text-base leading-relaxed text-[#4b4b4b] md:text-lg">{t("home_about_body")}</p>
+      </UberSection>
 
-      <section className="mb-16 md:mb-24">
-        <h2 className="font-headline text-2xl font-extrabold text-on-background md:text-3xl">{t("home_features_title")}</h2>
+      <UberSection className="mb-16 px-0 md:mb-24">
+        <h2 className="font-headline text-2xl font-extrabold text-black md:text-3xl">{t("home_features_title")}</h2>
         <div className="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
           {featureCards.map((f) => (
-            <div
-              key={f.titleKey}
-              className="rounded-2xl border border-outline-variant/15 bg-surface-container-lowest p-6 shadow-sm transition-shadow hover:shadow-md"
-            >
-              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-primary-container text-on-primary-container">
+            <UberCard key={f.titleKey} className="transition-shadow hover:shadow-medium">
+              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-card bg-[#efefef] text-black">
                 <MatIcon name={f.icon} className="text-2xl" />
               </div>
-              <h3 className="font-headline text-lg font-bold text-on-background">{t(f.titleKey)}</h3>
-              <p className="mt-2 text-sm leading-relaxed text-on-surface-variant">{t(f.bodyKey)}</p>
-            </div>
+              <h3 className="font-headline text-lg font-bold text-black">{t(f.titleKey)}</h3>
+              <p className="mt-2 text-sm leading-relaxed text-[#4b4b4b]">{t(f.bodyKey)}</p>
+            </UberCard>
           ))}
         </div>
-      </section>
+      </UberSection>
 
-      <section className="mb-8">
-        <h2 className="font-headline text-2xl font-extrabold text-on-background md:text-3xl">{t("home_audiences_title")}</h2>
+      <UberSection className="mb-8 px-0">
+        <h2 className="font-headline text-2xl font-extrabold text-black md:text-3xl">{t("home_audiences_title")}</h2>
         <div className="mt-10 grid gap-8 lg:grid-cols-3">
           {audiences.map((a) => (
-            <div
-              key={a.titleKey}
-              className="flex flex-col rounded-2xl border border-outline-variant/15 bg-surface-container-low p-8 shadow-sm"
-            >
-              <MatIcon name={a.icon} className="mb-4 text-4xl text-primary" />
-              <h3 className="font-headline text-xl font-bold text-on-background">{t(a.titleKey)}</h3>
-              <p className="mt-3 flex-1 text-sm leading-relaxed text-on-surface-variant">{t(a.bodyKey)}</p>
-              <Link
-                to={a.to}
-                className="mt-6 inline-flex items-center justify-center rounded-xl bg-primary px-5 py-3 text-center text-sm font-bold text-on-primary hover:bg-primary-dim"
-              >
+            <UberCard key={a.titleKey} featured className="flex flex-col">
+              <MatIcon name={a.icon} className="mb-4 text-4xl text-black" />
+              <h3 className="font-headline text-xl font-bold text-black">{t(a.titleKey)}</h3>
+              <p className="mt-3 flex-1 text-sm leading-relaxed text-[#4b4b4b]">{t(a.bodyKey)}</p>
+              <UberLinkButton to={a.to} className="mt-6 text-center font-bold">
                 {t(a.ctaKey)}
-              </Link>
-            </div>
+              </UberLinkButton>
+            </UberCard>
           ))}
         </div>
-      </section>
+      </UberSection>
     </PublicSiteLayout>
   );
 }

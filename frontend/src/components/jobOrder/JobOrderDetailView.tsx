@@ -141,6 +141,7 @@ export type JobOrderDetail = {
     location_lat: number | null;
     location_lng: number | null;
     is_preferred: boolean;
+    tier: string;
   }[];
   declined_workers: {
     offer_id: number;
@@ -196,6 +197,14 @@ type WorkerProfileDetail = {
 
 type Variant = "client" | "ta";
 
+function workerTierI18nKey(tier: string | undefined): string {
+  const v = tier || "standard";
+  if (v === "elite") return "worker_profile_tier_elite";
+  if (v === "preferred") return "worker_profile_tier_preferred";
+  if (v === "probation") return "worker_profile_tier_probation";
+  return "worker_profile_tier_standard";
+}
+
 export function JobOrderDetailView({ variant, basePath }: { variant: Variant; basePath: string }) {
   const { jobId } = useParams<{ jobId: string }>();
   const { t } = useTranslation();
@@ -219,6 +228,7 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
   const [maxDistanceKm, setMaxDistanceKm] = useState("");
   const [skillFilters, setSkillFilters] = useState<string[]>([]);
   const [certFilters, setCertFilters] = useState<string[]>([]);
+  const [tierFilter, setTierFilter] = useState("");
   const [appliedSort, setAppliedSort] = useState<"match" | "newest" | "oldest">("match");
   const [matchWeightsDraft, setMatchWeightsDraft] = useState<MatchWeightConfig | null>(null);
   const [savingMatchWeights, setSavingMatchWeights] = useState(false);
@@ -233,6 +243,7 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
       ...w,
       worker_skills: w.worker_skills ?? [],
       worker_certifications: w.worker_certifications ?? [],
+      tier: w.tier ?? "standard",
     })),
     declined_workers: j.declined_workers ?? [],
     rejected_workers: j.rejected_workers ?? [],
@@ -518,7 +529,8 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
         if (w.location_lat == null || w.location_lng == null) return false;
         return haversineKm(job.location_lat, job.location_lng, w.location_lat, w.location_lng) <= Number(maxDistanceKm);
       })();
-      return ratingPass && datePass && certPass && skillPass && certFilterPass && distancePass;
+      const tierPass = !tierFilter || (w.tier || "standard") === tierFilter;
+      return ratingPass && datePass && certPass && skillPass && certFilterPass && distancePass && tierPass;
     })
     .sort((a, b) => {
       if (preferredFirst) {
@@ -750,91 +762,173 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
             </div>
 
             {workerTab === "applied" && (
-              <div className="mb-4 grid gap-2 sm:grid-cols-3">
-                <input
-                  className="rounded-md border border-outline-variant/30 px-2 py-1.5 text-xs"
-                  type="number"
-                  min={0}
-                  step="0.1"
-                  placeholder="Min rating"
-                  value={minRating}
-                  onChange={(e) => setMinRating(e.target.value)}
-                />
-                <input
-                  className="rounded-md border border-outline-variant/30 px-2 py-1.5 text-xs"
-                  type="date"
-                  value={appliedSince}
-                  onChange={(e) => setAppliedSince(e.target.value)}
-                />
-                <input
-                  className="rounded-md border border-outline-variant/30 px-2 py-1.5 text-xs"
-                  type="number"
-                  min={0}
-                  placeholder="Min certifications"
-                  value={minCerts}
-                  onChange={(e) => setMinCerts(e.target.value)}
-                />
-                <input
-                  className="rounded-md border border-outline-variant/30 px-2 py-1.5 text-xs"
-                  type="number"
-                  min={0}
-                  step="0.1"
-                  placeholder="Max distance (km)"
-                  value={maxDistanceKm}
-                  onChange={(e) => setMaxDistanceKm(e.target.value)}
-                />
-                <select
-                  className="rounded-md border border-outline-variant/30 px-2 py-1.5 text-xs"
-                  value={appliedSort}
-                  onChange={(e) => setAppliedSort(e.target.value as "match" | "newest" | "oldest")}
-                >
-                  <option value="match">{t("job_detail_sort_match")}</option>
-                  <option value="newest">{t("job_detail_sort_newest")}</option>
-                  <option value="oldest">{t("job_detail_sort_oldest")}</option>
-                </select>
-                <label className="flex items-center gap-2 text-xs text-on-surface-variant">
-                  <input type="checkbox" checked={preferredFirst} onChange={(e) => setPreferredFirst(e.target.checked)} />
-                  {t("job_detail_preferred_first")}
-                </label>
-                <div className="sm:col-span-3 space-y-3">
-                  <div>
-                    <p className="text-[11px] font-medium text-on-surface-variant mb-1">{t("job_form_skills")}</p>
+              <div className="mb-5 rounded-xl border border-outline-variant/20 bg-surface-container-low/40 p-4 space-y-5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-on-surface-variant">
+                    {t("job_detail_applied_filters_title")}
+                  </h4>
+                  {(minRating ||
+                    appliedSince ||
+                    minCerts ||
+                    maxDistanceKm ||
+                    tierFilter ||
+                    skillFilters.length > 0 ||
+                    certFilters.length > 0) && (
+                    <button
+                      type="button"
+                      className="text-xs font-semibold text-primary hover:underline"
+                      onClick={() => {
+                        setMinRating("");
+                        setAppliedSince("");
+                        setMinCerts("");
+                        setMaxDistanceKm("");
+                        setTierFilter("");
+                        setSkillFilters([]);
+                        setCertFilters([]);
+                      }}
+                    >
+                      {t("job_detail_applied_filters_clear")}
+                    </button>
+                  )}
+                </div>
+                <div>
+                  <p className="text-[11px] font-semibold text-on-surface mb-2">{t("job_detail_applied_filters_criteria")}</p>
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    <div>
+                      <label className="block text-[10px] font-medium uppercase tracking-wide text-on-surface-variant mb-1">
+                        {t("job_detail_profile_tier")}
+                      </label>
+                      <select
+                        className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm text-on-surface"
+                        value={tierFilter}
+                        onChange={(e) => setTierFilter(e.target.value)}
+                        aria-label={t("job_detail_profile_tier")}
+                      >
+                        <option value="">{t("job_detail_filter_tier_all")}</option>
+                        <option value="elite">{t("worker_profile_tier_elite")}</option>
+                        <option value="preferred">{t("worker_profile_tier_preferred")}</option>
+                        <option value="standard">{t("worker_profile_tier_standard")}</option>
+                        <option value="probation">{t("worker_profile_tier_probation")}</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-medium uppercase tracking-wide text-on-surface-variant mb-1">
+                        {t("job_detail_filter_min_rating_label")}
+                      </label>
+                      <input
+                        className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm"
+                        type="number"
+                        min={0}
+                        step="0.1"
+                        placeholder={t("job_detail_filter_min_rating_ph")}
+                        value={minRating}
+                        onChange={(e) => setMinRating(e.target.value)}
+                        aria-label={t("job_detail_filter_min_rating_label")}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-medium uppercase tracking-wide text-on-surface-variant mb-1">
+                        {t("job_detail_filter_applied_since_label")}
+                      </label>
+                      <input
+                        className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm"
+                        type="date"
+                        value={appliedSince}
+                        onChange={(e) => setAppliedSince(e.target.value)}
+                        aria-label={t("job_detail_filter_applied_since_label")}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-medium uppercase tracking-wide text-on-surface-variant mb-1">
+                        {t("job_detail_filter_min_certs_label")}
+                      </label>
+                      <input
+                        className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm"
+                        type="number"
+                        min={0}
+                        placeholder={t("job_detail_filter_min_certs_ph")}
+                        value={minCerts}
+                        onChange={(e) => setMinCerts(e.target.value)}
+                        aria-label={t("job_detail_filter_min_certs_label")}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-medium uppercase tracking-wide text-on-surface-variant mb-1">
+                        {t("job_detail_filter_max_distance_label")}
+                      </label>
+                      <input
+                        className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm"
+                        type="number"
+                        min={0}
+                        step="0.1"
+                        placeholder={t("job_detail_filter_max_distance_ph")}
+                        value={maxDistanceKm}
+                        onChange={(e) => setMaxDistanceKm(e.target.value)}
+                        aria-label={t("job_detail_filter_max_distance_label")}
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div className="rounded-lg border border-outline-variant/15 bg-surface/50 p-3">
+                  <p className="text-[11px] font-semibold text-on-surface mb-3">{t("job_detail_applied_filters_sort")}</p>
+                  <div className="flex flex-wrap items-end gap-4">
+                    <div className="min-w-[min(100%,12rem)] flex-1 sm:max-w-xs">
+                      <label className="block text-[10px] font-medium uppercase tracking-wide text-on-surface-variant mb-1">
+                        {t("job_detail_applied_filters_sort_order")}
+                      </label>
+                      <select
+                        className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm"
+                        value={appliedSort}
+                        onChange={(e) => setAppliedSort(e.target.value as "match" | "newest" | "oldest")}
+                        aria-label={t("job_detail_applied_filters_sort_order")}
+                      >
+                        <option value="match">{t("job_detail_sort_match")}</option>
+                        <option value="newest">{t("job_detail_sort_newest")}</option>
+                        <option value="oldest">{t("job_detail_sort_oldest")}</option>
+                      </select>
+                    </div>
+                    <label className="flex cursor-pointer items-center gap-2 pb-2 text-sm text-on-surface">
+                      <input
+                        type="checkbox"
+                        className="rounded border-outline-variant/40"
+                        checked={preferredFirst}
+                        onChange={(e) => setPreferredFirst(e.target.checked)}
+                      />
+                      {t("job_detail_preferred_first")}
+                    </label>
+                  </div>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="rounded-lg border border-outline-variant/15 p-3">
+                    <p className="text-[11px] font-semibold text-on-surface mb-2">{t("job_form_skills")}</p>
                     <SkillMultiPicker
                       t={t}
                       selected={skillFilters}
                       onChange={setSkillFilters}
                       jobRequiredLabels={job.required_skills}
-                      inputClassName="w-full rounded-md border border-outline-variant/30 px-2 py-1.5 text-xs"
-                      addButtonClassName="rounded-md border border-outline-variant/30 px-3 py-1.5 text-xs font-medium"
+                      inputClassName="w-full rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm"
+                      addButtonClassName="rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-xs font-medium"
                       chipButtonClassName="rounded-md border border-outline-variant/30 px-2 py-1 text-[11px]"
                     />
                     {skillFilters.length > 0 && (
-                      <button
-                        type="button"
-                        className="mt-1 text-xs text-primary hover:underline"
-                        onClick={() => setSkillFilters([])}
-                      >
+                      <button type="button" className="mt-2 text-xs font-semibold text-primary hover:underline" onClick={() => setSkillFilters([])}>
                         {t("job_detail_clear_skill_filters")}
                       </button>
                     )}
                   </div>
-                  <div>
-                    <p className="text-[11px] font-medium text-on-surface-variant mb-1">{t("job_detail_filter_certs_label")}</p>
+                  <div className="rounded-lg border border-outline-variant/15 p-3">
+                    <p className="text-[11px] font-semibold text-on-surface mb-2">{t("job_detail_filter_certs_label")}</p>
                     <CertificationMultiPicker
                       t={t}
                       selected={certFilters}
                       onChange={setCertFilters}
                       jobRequiredLabels={job.required_certifications}
-                      inputClassName="w-full rounded-md border border-outline-variant/30 px-2 py-1.5 text-xs"
-                      addButtonClassName="rounded-md border border-outline-variant/30 px-3 py-1.5 text-xs font-medium"
+                      inputClassName="w-full rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm"
+                      addButtonClassName="rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-xs font-medium"
                       chipButtonClassName="rounded-md border border-outline-variant/30 px-2 py-1 text-[11px]"
                     />
                     {certFilters.length > 0 && (
-                      <button
-                        type="button"
-                        className="mt-1 text-xs text-primary hover:underline"
-                        onClick={() => setCertFilters([])}
-                      >
+                      <button type="button" className="mt-2 text-xs font-semibold text-primary hover:underline" onClick={() => setCertFilters([])}>
                         {t("job_detail_clear_cert_filters")}
                       </button>
                     )}
@@ -894,10 +988,13 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
                         {new Date(w.shift_starts_at).toLocaleString()} → {new Date(w.shift_ends_at).toLocaleString()}
                       </p>
                       <p className="text-[11px] text-on-surface-variant mt-1">
-                        Rating {Number(w.rating_avg || 0).toFixed(1)}
+                        {t("job_detail_profile_rating")} {Number(w.rating_avg || 0).toFixed(1)}
+                        {" · "}
+                        {t("job_detail_profile_tier")} {t(workerTierI18nKey(w.tier))}
                         {w.match_score != null ? ` · ${t("job_detail_match_score_short")} ${Number(w.match_score).toFixed(2)}` : ""}
-                        · Certs {w.certifications_count}
-                        {w.applied_at ? ` · Applied ${new Date(w.applied_at).toLocaleString()}` : ""}
+                        {" · "}
+                        {t("job_detail_profile_certs")} {w.certifications_count}
+                        {w.applied_at ? ` · ${t("job_detail_applied_at_short")} ${new Date(w.applied_at).toLocaleString()}` : ""}
                       </p>
                       {(w.worker_skills?.length ?? 0) > 0 && (
                         <div className="flex flex-wrap gap-1 mt-1.5">
@@ -1055,7 +1152,7 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
                 </div>
                 <div>
                   <dt className="text-on-surface-variant">{t("job_detail_profile_tier")}</dt>
-                  <dd>{profileData.tier}</dd>
+                  <dd>{t(workerTierI18nKey(profileData.tier))}</dd>
                 </div>
                 <div>
                   <dt className="text-on-surface-variant">{t("job_detail_profile_rating")}</dt>

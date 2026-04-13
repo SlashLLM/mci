@@ -431,16 +431,16 @@ export default function WorkerOnboardingPage() {
   ];
 
   return (
-    <div className="min-h-screen bg-surface text-on-surface flex flex-col">
-      <header className="sticky top-0 z-40 h-16 border-b border-outline-variant/20 bg-slate-50">
+    <div className="flex min-h-screen flex-col bg-surface text-on-surface">
+      <header className="sticky top-0 z-40 h-16 border-b border-black/10 bg-white">
         <div className="mx-auto flex h-full max-w-[1440px] items-center justify-between px-4 md:px-8">
-          <span className="truncate text-xl font-bold tracking-tight text-blue-900">MCI Workforce</span>
+          <span className="truncate text-xl font-bold tracking-tight text-black">MCI Workforce</span>
           <div className="hidden items-center gap-4 md:flex" />
         </div>
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        <aside className="hidden w-72 shrink-0 flex-col gap-4 bg-slate-100 px-6 py-8 md:flex">
+        <aside className="hidden w-72 shrink-0 flex-col gap-4 bg-[#f3f3f3] px-6 py-8 md:flex">
           <div className="mb-8">
             <h2 className="text-2xl font-headline font-extrabold tracking-tight text-on-surface">Onboarding</h2>
             <div className="mt-4">
@@ -462,9 +462,9 @@ export default function WorkerOnboardingPage() {
                   type="button"
                   onClick={() => setStep(item.index)}
                   className={[
-                    "flex items-center gap-3 rounded-lg px-4 py-3 text-left transition-all",
+                    "flex items-center gap-3 rounded-pill px-4 py-3 text-left transition-all",
                     active
-                      ? "translate-x-1 border-r-4 border-primary bg-surface-container-lowest font-bold text-primary"
+                      ? "translate-x-1 bg-black font-bold text-white"
                       : "text-on-surface-variant hover:bg-white/40",
                   ].join(" ")}
                 >
@@ -509,8 +509,8 @@ export default function WorkerOnboardingPage() {
               </p>
             </header>
 
-            <section className="relative overflow-hidden rounded-xl bg-surface-container-lowest p-6 shadow-[0_10px_40px_rgba(43,52,55,0.06)] md:p-10">
-              <div className="pointer-events-none absolute -right-20 -top-20 h-56 w-56 rounded-full bg-primary/5 blur-3xl" />
+            <section className="relative overflow-hidden rounded-featured bg-surface-container-lowest p-6 shadow-card md:p-10">
+              <div className="pointer-events-none absolute -right-20 -top-20 h-56 w-56 rounded-full bg-black/5 blur-3xl" />
               <div className="relative z-10">
         {step === 1 && (
           <div className="grid grid-cols-1 gap-x-10 gap-y-8 md:grid-cols-2">
@@ -568,7 +568,7 @@ export default function WorkerOnboardingPage() {
               />
               <button
                 type="button"
-                className="px-3 rounded-xl bg-primary text-slate-950 text-sm font-semibold hover:brightness-95 active:scale-95"
+                className="px-3 rounded-pill bg-black text-white text-sm font-semibold hover:brightness-95 active:scale-95"
                 onClick={() => addLanguage(langInput)}
               >
                 +
@@ -647,7 +647,7 @@ export default function WorkerOnboardingPage() {
             <div className="flex flex-wrap items-center gap-3">
               <button
                 type="button"
-                className="rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-slate-950 hover:brightness-95 active:scale-95"
+                className="rounded-pill bg-black px-3 py-2 text-sm font-semibold text-white hover:brightness-95 active:scale-95"
                 onClick={useCurrentLocation}
               >
                 {t("map_use_my_location")}

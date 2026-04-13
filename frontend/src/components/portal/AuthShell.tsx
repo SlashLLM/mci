@@ -19,10 +19,10 @@ export default function AuthShell({ children, eyebrow, title, description, omitH
       {!omitHero ? (
         <header className="mb-8 space-y-2">
           {eyebrow ? (
-            <span className="text-xs font-bold uppercase tracking-[0.2em] text-primary">{eyebrow}</span>
+            <span className="text-xs font-bold uppercase tracking-[0.2em] text-black">{eyebrow}</span>
           ) : null}
-          <h1 className="font-headline text-3xl font-extrabold tracking-tight text-on-background md:text-4xl">{title}</h1>
-          {description ? <p className="max-w-md text-sm leading-relaxed text-on-surface-variant">{description}</p> : null}
+          <h1 className="font-headline text-3xl font-extrabold tracking-tight text-black md:text-4xl">{title}</h1>
+          {description ? <p className="max-w-md text-sm leading-relaxed text-[#4b4b4b]">{description}</p> : null}
         </header>
       ) : null}
       {children}

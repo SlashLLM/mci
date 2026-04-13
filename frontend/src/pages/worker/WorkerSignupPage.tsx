@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router-dom";
 import { api, setSession } from "../../api";
 import AuthShell from "../../components/portal/AuthShell";
+import { UberButton } from "../../components/ui/UberPrimitives";
 
 function MatIcon({ name, className = "" }: { name: string; className?: string }) {
   return <span className={`material-symbols-outlined ${className}`.trim()} aria-hidden>{name}</span>;
@@ -29,7 +30,7 @@ export default function WorkerSignupPage() {
   const [loading, setLoading] = useState(false);
 
   const inputClass =
-    "w-full rounded-xl border border-outline-variant/30 bg-surface-container-low px-4 py-3 text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary";
+    "w-full rounded-card border border-black bg-white px-4 py-3 text-black placeholder:text-[#afafaf] focus:outline-none focus:ring-2 focus:ring-black";
 
   async function sendCode() {
     setMsg(null);
@@ -86,12 +87,12 @@ export default function WorkerSignupPage() {
       title={t("worker_signup_title")}
       description={t("worker_signup_subtitle")}
     >
-      <div className="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-6 shadow-sm md:p-8">
+      <div className="rounded-featured border border-black/10 bg-white p-6 shadow-card md:p-8">
         {step === "email" && (
           <div className="space-y-4">
             <div>
-              <label className="mb-1.5 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-on-surface-variant">
-                <MatIcon name="mail" className="text-base text-primary" />
+              <label className="mb-1.5 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[#4b4b4b]">
+                <MatIcon name="mail" className="text-base text-black" />
                 {t("worker_signup_email_label")}
               </label>
               <input
@@ -103,24 +104,19 @@ export default function WorkerSignupPage() {
                 placeholder="you@example.com"
               />
             </div>
-            <button
-              type="button"
-              disabled={loading}
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-6 py-3.5 text-sm font-bold text-on-primary shadow-sm transition-colors hover:bg-primary-dim disabled:opacity-50"
-              onClick={() => void sendCode()}
-            >
+            <UberButton disabled={loading} className="flex w-full items-center justify-center gap-2 text-sm font-bold disabled:opacity-50" onClick={() => void sendCode()}>
               <MatIcon name="send" className="text-lg" />
               {loading ? "…" : t("worker_signup_send_code")}
-            </button>
-            <p className="text-center text-xs text-on-surface-variant">{t("worker_signup_phone_coming")}</p>
+            </UberButton>
+            <p className="text-center text-xs text-[#4b4b4b]">{t("worker_signup_phone_coming")}</p>
           </div>
         )}
 
         {step === "code" && (
           <div className="space-y-4">
-            <p className="text-sm text-on-surface-variant">
+            <p className="text-sm text-[#4b4b4b]">
               {t("worker_signup_sent_to")}{" "}
-              <span className="font-semibold text-primary">{email.trim()}</span>
+              <span className="font-semibold text-black">{email.trim()}</span>
             </p>
             {deliveryKind === "dev" ? (
               <p className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950 dark:border-amber-800/60 dark:bg-amber-950/35 dark:text-amber-100">
@@ -138,8 +134,8 @@ export default function WorkerSignupPage() {
               </p>
             ) : null}
             <div>
-              <label className="mb-1.5 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-on-surface-variant">
-                <MatIcon name="pin" className="text-base text-primary" />
+              <label className="mb-1.5 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[#4b4b4b]">
+                <MatIcon name="pin" className="text-base text-black" />
                 {t("worker_signup_code_label")}
               </label>
               <input
@@ -151,18 +147,13 @@ export default function WorkerSignupPage() {
                 placeholder="••••••"
               />
             </div>
-            <button
-              type="button"
-              disabled={loading}
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-6 py-3.5 text-sm font-bold text-on-primary shadow-sm transition-colors hover:bg-primary-dim disabled:opacity-50"
-              onClick={() => void verify()}
-            >
+            <UberButton disabled={loading} className="flex w-full items-center justify-center gap-2 text-sm font-bold disabled:opacity-50" onClick={() => void verify()}>
               <MatIcon name="verified_user" className="text-lg" />
               {loading ? "…" : t("worker_signup_verify_continue")}
-            </button>
+            </UberButton>
             <button
               type="button"
-              className="w-full py-2 text-sm font-semibold text-primary underline-offset-2 hover:underline"
+              className="w-full py-2 text-sm font-semibold text-black underline-offset-2 hover:underline"
               onClick={() => {
                 setStep("email");
                 setCode("");
@@ -176,19 +167,19 @@ export default function WorkerSignupPage() {
         )}
 
         {msg ? (
-          <p className="mt-4 rounded-xl border border-error-container/50 bg-error-container/15 px-3 py-2 text-sm text-error whitespace-pre-wrap">
+          <p className="mt-4 whitespace-pre-wrap rounded-card border border-black/20 bg-[#efefef] px-3 py-2 text-sm text-black">
             {msg}
           </p>
         ) : null}
 
-        <p className="mt-6 border-t border-outline-variant/15 pt-6 text-center text-[11px] leading-relaxed text-on-surface-variant">
+        <p className="mt-6 border-t border-black/10 pt-6 text-center text-[11px] leading-relaxed text-[#4b4b4b]">
           {t("worker_signup_resend_note")}
         </p>
 
         <div className="mt-4 text-center">
           <Link
             to="/login"
-            className="inline-flex items-center gap-2 text-sm font-semibold text-primary hover:text-primary-dim"
+            className="inline-flex items-center gap-2 text-sm font-semibold text-black hover:text-[#4b4b4b]"
           >
             <MatIcon name="login" className="text-lg" />
             {t("worker_welcome_have_account")}

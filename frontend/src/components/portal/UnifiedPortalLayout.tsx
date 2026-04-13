@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { MouseEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
@@ -52,9 +52,9 @@ type PortalNotification = {
 };
 
 const sidebarInactive =
-  "w-full flex items-center gap-3 text-slate-500 hover:text-primary px-6 py-3 rounded-l-xl";
+  "mx-3 flex items-center gap-3 text-[#4b4b4b] hover:text-black px-4 py-3 rounded-2xl";
 const sidebarActive =
-  "w-full flex items-center gap-3 bg-white text-primary rounded-l-xl shadow-sm px-4 py-3";
+  "mx-3 flex items-center gap-3 bg-black text-white rounded-2xl shadow-card px-4 py-3";
 
 function SideNavLink({
   to,
@@ -70,10 +70,10 @@ function SideNavLink({
   collapsed: boolean;
 }) {
   const inactiveClass = collapsed
-    ? `${sidebarInactive} md:justify-center md:gap-0 md:px-0 md:rounded-none`
+    ? `${sidebarInactive} md:mx-0 md:justify-center md:gap-0 md:px-0 md:rounded-none`
     : sidebarInactive;
   const activeClass = collapsed
-    ? `${sidebarActive} md:justify-center md:gap-0 md:px-0 md:rounded-none`
+    ? `${sidebarActive} md:mx-0 md:justify-center md:gap-0 md:px-0 md:rounded-none`
     : sidebarActive;
 
   return (
@@ -105,7 +105,13 @@ export default function UnifiedPortalLayout({
   const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [notificationsError, setNotificationsError] = useState<string | null>(null);
   const [notificationsClearing, setNotificationsClearing] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("portal-dark-mode") === "1";
+  });
+  const [themeMorphing, setThemeMorphing] = useState(false);
   const lastSeenMaxNotificationIdRef = useRef(0);
+  const themeMorphTimerRef = useRef<number | null>(null);
 
   const primaryHref = useMemo(() => {
     if (primaryCta.getHref) return primaryCta.getHref(location.pathname, location.search);
@@ -165,6 +171,24 @@ export default function UnifiedPortalLayout({
     void loadNotifications();
   }
 
+  useEffect(() => {
+    window.localStorage.setItem("portal-dark-mode", darkMode ? "1" : "0");
+  }, [darkMode]);
+
+  useEffect(() => {
+    return () => {
+      if (themeMorphTimerRef.current !== null) window.clearTimeout(themeMorphTimerRef.current);
+    };
+  }, []);
+
+  function toggleTheme(event: MouseEvent<HTMLButtonElement>) {
+    event.currentTarget.blur();
+    setThemeMorphing(true);
+    setDarkMode((v) => !v);
+    if (themeMorphTimerRef.current !== null) window.clearTimeout(themeMorphTimerRef.current);
+    themeMorphTimerRef.current = window.setTimeout(() => setThemeMorphing(false), 1100);
+  }
+
   async function clearAllNotifications() {
     if (notifications.length === 0 || notificationsClearing) return;
     setNotificationsClearing(true);
@@ -201,24 +225,35 @@ export default function UnifiedPortalLayout({
   const mainPaddingLeftClass = sidebarCollapsed ? "md:pl-[6rem]" : "md:pl-[17rem]";
 
   return (
-    <div className="min-h-screen bg-background text-on-background font-body overflow-x-hidden">
-      <header className="fixed top-0 left-0 right-0 z-50 flex h-16 w-full items-center justify-between bg-slate-50 px-4 font-manrope antialiased shadow-sm shadow-slate-200/50 md:px-8">
+    <div className={`portal-theme-root ${darkMode ? "portal-theme-dark" : ""} min-h-screen overflow-x-hidden bg-white font-body text-black`}>
+      <header className="fixed left-0 right-0 top-0 z-50 flex h-16 w-full items-center justify-between border-b border-black/10 bg-white px-4 antialiased md:px-8">
         <div className="flex min-w-0 flex-1 items-center gap-4 md:gap-8">
           <button
             type="button"
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-slate-600 hover:bg-slate-200/50 md:hidden"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-black hover:bg-[#efefef] md:hidden"
             aria-label="Open menu"
             onClick={() => setMenuOpen(true)}
           >
             <MatIcon name="menu" className="text-2xl" />
           </button>
-          <span className="truncate text-xl font-bold tracking-tight text-blue-900">MCI Workforce</span>
+          <span className="truncate text-xl font-bold tracking-tight text-black">MCI Workforce</span>
         </div>
 
         <div className="flex shrink-0 items-center gap-2 md:gap-4">
+          <button
+            type="button"
+            className="theme-toggle-btn relative overflow-hidden rounded-pill border border-black bg-white px-3 py-1.5 text-xs font-semibold text-black transition-all hover:bg-[#efefef] active:scale-95"
+            aria-label={darkMode ? "Switch to light mode" : "Switch to dark mode"}
+            onClick={toggleTheme}
+          >
+            <span className="relative z-[1] inline-flex items-center gap-1.5">
+              <MatIcon name={darkMode ? "light_mode" : "dark_mode"} className="text-base" />
+              {darkMode ? "Light" : "Dark"}
+            </span>
+          </button>
           <label className="sr-only">{t("language")}</label>
           <select
-            className="max-w-[5.5rem] rounded-lg border border-outline-variant/40 bg-surface-container-lowest px-2 py-1.5 text-xs text-on-surface"
+            className="max-w-[5.5rem] rounded-pill border border-black bg-white px-2 py-1.5 text-xs text-black"
             value={i18n.language.startsWith("zh") ? "zh" : "en"}
             onChange={(e) => {
               const lng = e.target.value;
@@ -232,26 +267,26 @@ export default function UnifiedPortalLayout({
           <div className="relative hidden sm:block">
             <button
               type="button"
-              className="rounded-full p-2 text-slate-600 transition-colors hover:bg-slate-200/50 active:scale-95"
+              className="rounded-full p-2 text-black transition-colors hover:bg-[#efefef] active:scale-95"
               aria-label={t("notifications_title")}
               onClick={toggleNotifications}
             >
               <MatIcon name="notifications" />
             </button>
             {unreadCount > 0 && (
-              <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-error px-1.5 py-0.5 text-center text-[10px] font-bold leading-none text-on-error">
+              <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-black px-1.5 py-0.5 text-center text-[10px] font-bold leading-none text-white">
                 {unreadCount > 99 ? "99+" : unreadCount}
               </span>
             )}
           </div>
           <NavLink
             to={primaryHref}
-            className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-on-primary shadow-sm transition-colors hover:bg-primary-dim active:scale-95 md:px-6"
+            className="rounded-pill bg-black px-4 py-2 text-sm font-semibold text-white shadow-card transition-colors hover:bg-black/90 active:scale-95 md:px-6"
           >
             {primaryCta.label}
           </NavLink>
-          <div className="ml-1 hidden h-10 w-10 overflow-hidden rounded-full border-2 border-surface-container sm:block">
-            <div className="flex h-full w-full items-center justify-center bg-primary-container text-sm font-bold text-on-primary-container">
+          <div className="ml-1 hidden h-10 w-10 overflow-hidden rounded-full border-2 border-black sm:block">
+            <div className="flex h-full w-full items-center justify-center bg-[#efefef] text-sm font-bold text-black">
               {roleInitial}
             </div>
           </div>
@@ -261,7 +296,7 @@ export default function UnifiedPortalLayout({
       {showNewNotificationsBanner && (
         <button
           type="button"
-          className="fixed top-16 right-4 z-[55] hidden w-[22rem] max-w-[calc(100vw-2rem)] items-center justify-center gap-2 rounded-b-xl border border-error/80 border-t-0 bg-error px-4 py-2.5 text-center text-sm font-semibold text-on-error shadow-lg shadow-error/20 sm:flex"
+          className="fixed top-16 right-4 z-[55] hidden w-[22rem] max-w-[calc(100vw-2rem)] items-center justify-center gap-2 rounded-b-xl border border-black border-t-0 bg-black px-4 py-2.5 text-center text-sm font-semibold text-white shadow-floating sm:flex"
           aria-live="polite"
           onClick={openNotificationsFromBanner}
         >
@@ -278,21 +313,21 @@ export default function UnifiedPortalLayout({
             aria-label={t("ta_timesheet_detail_close")}
             onClick={() => setNotificationsOpen(false)}
           />
-          <section className="fixed right-4 top-20 z-[70] w-[22rem] max-w-[calc(100vw-2rem)] rounded-2xl border border-outline-variant/25 bg-surface-container-lowest p-4 shadow-2xl">
+          <section className="fixed right-4 top-20 z-[70] w-[22rem] max-w-[calc(100vw-2rem)] rounded-featured border border-black/20 bg-white p-4 shadow-medium">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <h2 className="font-headline text-base font-bold text-on-surface">{t("notifications_title")}</h2>
+              <h2 className="font-headline text-base font-bold text-black">{t("notifications_title")}</h2>
               <div className="flex items-center gap-1">
                 <button
                   type="button"
                   disabled={notificationsLoading || notificationsClearing || notifications.length === 0}
-                  className="rounded-lg px-2 py-1 text-xs font-semibold text-error hover:bg-error/10 disabled:pointer-events-none disabled:opacity-40"
+                  className="rounded-pill px-2 py-1 text-xs font-semibold text-black hover:bg-[#efefef] disabled:pointer-events-none disabled:opacity-40"
                   onClick={() => void clearAllNotifications()}
                 >
                   {t("notifications_clear_all")}
                 </button>
                 <button
                   type="button"
-                  className="rounded-lg p-1 text-on-surface-variant hover:bg-surface-container-high"
+                  className="rounded-pill p-1 text-[#4b4b4b] hover:bg-[#efefef]"
                   aria-label={t("ta_timesheet_detail_close")}
                   onClick={() => setNotificationsOpen(false)}
                 >
@@ -300,10 +335,10 @@ export default function UnifiedPortalLayout({
                 </button>
               </div>
             </div>
-            {notificationsLoading ? <p className="text-sm text-on-surface-variant">{t("notifications_loading")}</p> : null}
-            {notificationsError ? <p className="text-sm text-error">{notificationsError}</p> : null}
+            {notificationsLoading ? <p className="text-sm text-[#4b4b4b]">{t("notifications_loading")}</p> : null}
+            {notificationsError ? <p className="text-sm text-black">{notificationsError}</p> : null}
             {!notificationsLoading && !notificationsError && notifications.length === 0 ? (
-              <p className="text-sm text-on-surface-variant">{t("notifications_empty")}</p>
+              <p className="text-sm text-[#4b4b4b]">{t("notifications_empty")}</p>
             ) : null}
             {!notificationsLoading && !notificationsError && notifications.length > 0 ? (
               <div className="max-h-[24rem] space-y-2 overflow-y-auto pr-1">
@@ -311,16 +346,16 @@ export default function UnifiedPortalLayout({
                   <button
                     key={notification.id}
                     type="button"
-                    className="w-full rounded-xl border border-outline-variant/15 bg-surface-container-low p-3 text-left transition-colors hover:bg-surface-container-high"
+                    className="w-full rounded-card border border-black/10 bg-[#f3f3f3] p-3 text-left transition-colors hover:bg-[#efefef]"
                     onClick={() => handleNotificationClick(notification)}
                   >
                     <div className="flex items-start justify-between gap-3">
-                      <p className="font-semibold text-on-surface">{notification.title}</p>
-                      {!notification.read_at && <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full bg-error" />}
+                      <p className="font-semibold text-black">{notification.title}</p>
+                      {!notification.read_at && <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full bg-black" />}
                     </div>
-                    <p className="mt-1 text-sm text-on-surface-variant">{notification.body}</p>
+                    <p className="mt-1 text-sm text-[#4b4b4b]">{notification.body}</p>
                     {notification.created_at ? (
-                      <p className="mt-2 text-[11px] uppercase tracking-wide text-on-surface-variant/80">
+                      <p className="mt-2 text-[11px] uppercase tracking-wide text-[#afafaf]">
                         {formatNotificationTime(notification.created_at)}
                       </p>
                     ) : null}
@@ -342,15 +377,15 @@ export default function UnifiedPortalLayout({
       )}
 
       <aside
-        className={`fixed left-0 top-0 z-40 flex h-screen w-64 flex-col bg-slate-100 pt-20 font-manrope text-sm font-medium transition-all duration-200 ${asideWidthClass} border-r border-slate-200/80 md:translate-x-0 ${
+        className={`fixed left-0 top-0 z-40 flex h-screen w-64 flex-col border-r border-black/10 bg-[#f3f3f3] pt-20 text-sm font-medium transition-all duration-200 ${asideWidthClass} md:translate-x-0 ${
           menuOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
         <div className="mb-8 flex items-start justify-between gap-3 px-6 md:px-4">
           <div className="min-w-0">
-            <h2 className={`text-xl font-black text-blue-900 ${sidebarCollapsed ? "md:hidden" : ""}`}>{brandTitle}</h2>
+            <h2 className={`text-xl font-black text-black ${sidebarCollapsed ? "md:hidden" : ""}`}>{brandTitle}</h2>
           {brandSubtitleKey && (
-            <p className={`text-[10px] uppercase tracking-widest text-on-surface-variant opacity-70 ${sidebarCollapsed ? "md:hidden" : ""}`}>
+            <p className={`text-[10px] uppercase tracking-widest text-[#4b4b4b] opacity-70 ${sidebarCollapsed ? "md:hidden" : ""}`}>
               {sidebarSubtitle}
             </p>
           )}
@@ -358,7 +393,7 @@ export default function UnifiedPortalLayout({
 
           <button
             type="button"
-            className="hidden h-9 w-9 items-center justify-center rounded-lg text-slate-600 hover:bg-slate-200/50 active:scale-95 md:flex"
+            className="hidden h-9 w-9 items-center justify-center rounded-pill text-black hover:bg-[#efefef] active:scale-95 md:flex"
             aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
             onClick={() => setSidebarCollapsed((v) => !v)}
           >
@@ -372,10 +407,10 @@ export default function UnifiedPortalLayout({
             </SideNavLink>
           ))}
         </nav>
-        <div className="border-t border-slate-200/80 px-6 py-6 md:px-3">
+        <div className="border-t border-black/10 px-6 py-6 md:px-3">
           <NavLink
             to={asideCta.to}
-            className="mb-4 flex w-full items-center justify-center gap-2 rounded-xl bg-primary-container py-3 font-bold text-on-primary-container transition-all hover:brightness-95"
+            className="mb-4 flex w-full items-center justify-center gap-2 rounded-pill bg-black py-3 font-bold text-white transition-all hover:bg-black/90"
           >
             <MatIcon name="add_circle" className="text-lg" />
             <span className={sidebarCollapsed ? "md:hidden" : ""}>{t(asideCta.labelKey)}</span>
@@ -383,7 +418,7 @@ export default function UnifiedPortalLayout({
           <div className="space-y-1">
             <button
               type="button"
-              className="flex w-full items-center gap-3 py-2 text-slate-400 transition-colors hover:text-primary md:gap-0 md:justify-center"
+              className="flex w-full items-center gap-3 py-2 text-[#4b4b4b] transition-colors hover:text-black md:justify-center md:gap-0"
               onClick={() => {
                 clearSession();
                 navigate("/");
@@ -396,25 +431,27 @@ export default function UnifiedPortalLayout({
         </div>
       </aside>
 
-      <main className={`min-h-screen pt-20 transition-all duration-200 ${mainPaddingLeftClass}`}>
-        {children}
-        <footer className="mt-auto w-full border-t border-slate-200/80 bg-slate-50 py-8 font-body text-xs tracking-wide">
-          <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-4 px-8 opacity-80 transition-opacity hover:opacity-100 md:flex-row">
+      <main className={`flex min-h-screen flex-col pt-20 transition-all duration-200 ${mainPaddingLeftClass}`}>
+        <div className="flex-1">
+          {children}
+        </div>
+        <footer className="mt-auto w-full bg-black py-8 text-xs tracking-wide text-white">
+          <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-4 px-8 md:flex-row">
             <div>
-              <span className="mr-4 font-manrope font-bold text-slate-600">MCI Workforce</span>
-              <span className="text-slate-500">© {new Date().getFullYear()} MCI Workforce Management. All rights reserved.</span>
+              <span className="mr-4 font-manrope font-bold text-white">MCI Workforce</span>
+              <span className="text-[#afafaf]">© {new Date().getFullYear()} MCI Workforce Management. All rights reserved.</span>
             </div>
             <nav className="flex flex-wrap justify-center gap-6">
-              <a className="text-slate-500 underline underline-offset-4 hover:text-primary" href="#" onClick={(e) => e.preventDefault()}>
+              <a className="text-[#afafaf] underline underline-offset-4 hover:text-white" href="#" onClick={(e) => e.preventDefault()}>
                 Privacy Policy
               </a>
-              <a className="text-slate-500 underline underline-offset-4 hover:text-primary" href="#" onClick={(e) => e.preventDefault()}>
+              <a className="text-[#afafaf] underline underline-offset-4 hover:text-white" href="#" onClick={(e) => e.preventDefault()}>
                 Terms of Service
               </a>
-              <a className="text-slate-500 underline underline-offset-4 hover:text-primary" href="#" onClick={(e) => e.preventDefault()}>
+              <a className="text-[#afafaf] underline underline-offset-4 hover:text-white" href="#" onClick={(e) => e.preventDefault()}>
                 Compliance
               </a>
-              <a className="text-slate-500 underline underline-offset-4 hover:text-primary" href="#" onClick={(e) => e.preventDefault()}>
+              <a className="text-[#afafaf] underline underline-offset-4 hover:text-white" href="#" onClick={(e) => e.preventDefault()}>
                 Support
               </a>
             </nav>
@@ -424,11 +461,17 @@ export default function UnifiedPortalLayout({
 
       <NavLink
         to={floatingCta.to}
-        className="fixed bottom-8 right-8 z-50 flex h-16 w-16 items-center justify-center rounded-full bg-primary text-on-primary shadow-2xl transition-all hover:scale-110 active:scale-95"
+        className="fixed bottom-8 right-8 z-50 flex h-16 w-16 translate-y-[2px] items-center justify-center rounded-full bg-white text-black shadow-floating transition-all hover:scale-110 hover:bg-[#f3f3f3] active:scale-95"
         aria-label={t(floatingCta.ariaLabelKey)}
       >
         <MatIcon name="add" className="text-3xl" />
       </NavLink>
+      {themeMorphing && (
+        <div
+          className={`theme-morph-overlay ${darkMode ? "theme-morph-dark" : "theme-morph-light"}`}
+          aria-hidden
+        />
+      )}
     </div>
   );
 }

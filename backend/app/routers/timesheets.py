@@ -3,7 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import require_roles
@@ -13,6 +13,8 @@ from app.models import (
     JobOrder,
     PreferredWorker,
     Shift,
+    TaClientContract,
+    TaClientContractStatus,
     TimesheetEntry,
     TimesheetStatus,
     User,
@@ -48,6 +50,14 @@ DISPUTABLE_STATUSES = {
     TimesheetStatus.client_payroll_released,
     TimesheetStatus.disputed,
 }
+
+# Worker earnings: after client endorsement (direct payroll), or after TA verification when org is on TA payroll.
+_WORKER_EARNINGS_DIRECT = (
+    TimesheetStatus.employer_endorsed,
+    TimesheetStatus.client_payroll_released,
+    TimesheetStatus.payment_released,
+)
+_WORKER_EARNINGS_TA_PAYROLL = (TimesheetStatus.ta_verified, TimesheetStatus.payment_released)
 
 
 def _timesheet_row(
@@ -100,8 +110,28 @@ async def list_timesheets(
         wp = r.scalar_one_or_none()
         if not wp:
             return []
+        worker_earnings = or_(
+            and_(
+                TaClientContract.id.is_(None),
+                TimesheetEntry.status.in_(_WORKER_EARNINGS_DIRECT),
+            ),
+            and_(
+                TaClientContract.id.is_not(None),
+                TimesheetEntry.status.in_(_WORKER_EARNINGS_TA_PAYROLL),
+            ),
+        )
         r2 = await db.execute(
-            base.where(TimesheetEntry.worker_id == wp.id).order_by(TimesheetEntry.id.desc())
+            base.outerjoin(
+                TaClientContract,
+                (TaClientContract.client_org_id == JobOrder.client_org_id)
+                & (TaClientContract.status == TaClientContractStatus.active),
+            )
+            .where(
+                TimesheetEntry.worker_id == wp.id,
+                TimesheetEntry.status != TimesheetStatus.disputed,
+                worker_earnings,
+            )
+            .order_by(TimesheetEntry.id.desc())
         )
     elif user.role == UserRole.client:
         r2 = await db.execute(

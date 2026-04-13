@@ -107,16 +107,16 @@ export default function ClientOnboardingPage() {
   ];
 
   return (
-    <div className="min-h-screen bg-surface text-on-surface flex flex-col">
-      <header className="sticky top-0 z-40 h-16 border-b border-outline-variant/20 bg-slate-50">
+    <div className="flex min-h-screen flex-col bg-surface text-on-surface">
+      <header className="sticky top-0 z-40 h-16 border-b border-black/10 bg-white">
         <div className="mx-auto flex h-full max-w-[1440px] items-center justify-between px-4 md:px-8">
-          <span className="truncate text-xl font-bold tracking-tight text-blue-900">MCI Workforce</span>
+          <span className="truncate text-xl font-bold tracking-tight text-black">MCI Workforce</span>
           <div className="hidden items-center gap-4 md:flex" />
         </div>
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        <aside className="hidden w-72 shrink-0 flex-col gap-4 bg-slate-100 px-6 py-8 md:flex">
+        <aside className="hidden w-72 shrink-0 flex-col gap-4 bg-[#f3f3f3] px-6 py-8 md:flex">
           <div className="mb-8">
             <h2 className="text-2xl font-headline font-extrabold tracking-tight text-on-surface">{t("client_onboarding_title")}</h2>
             <div className="mt-4">
@@ -137,9 +137,9 @@ export default function ClientOnboardingPage() {
                   type="button"
                   onClick={() => setStep(item.index)}
                   className={[
-                    "flex items-center gap-3 rounded-lg px-4 py-3 text-left transition-all",
+                    "flex items-center gap-3 rounded-pill px-4 py-3 text-left transition-all",
                     active
-                      ? "translate-x-1 border-r-4 border-primary bg-surface-container-lowest font-bold text-primary"
+                      ? "translate-x-1 bg-black font-bold text-white"
                       : "text-on-surface-variant hover:bg-white/40",
                   ].join(" ")}
                 >
@@ -172,8 +172,8 @@ export default function ClientOnboardingPage() {
               <p className="max-w-xl text-on-surface-variant">{t("client_onboarding_subtitle")}</p>
             </header>
 
-            <section className="relative overflow-hidden rounded-xl bg-surface-container-lowest p-6 shadow-[0_10px_40px_rgba(43,52,55,0.06)] md:p-10">
-              <div className="pointer-events-none absolute -right-20 -top-20 h-56 w-56 rounded-full bg-primary/5 blur-3xl" />
+            <section className="relative overflow-hidden rounded-featured bg-surface-container-lowest p-6 shadow-card md:p-10">
+              <div className="pointer-events-none absolute -right-20 -top-20 h-56 w-56 rounded-full bg-black/5 blur-3xl" />
               <div className="relative z-10">
                 {step === 1 && (
                   <div className="space-y-4">

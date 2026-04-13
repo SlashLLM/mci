@@ -17,14 +17,27 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("worker_profiles", sa.Column("internal_notes", sa.Text(), nullable=True))
-    op.add_column(
-        "worker_profiles",
-        sa.Column("follow_up_required", sa.Boolean(), nullable=False, server_default=sa.false()),
-    )
-    op.alter_column("worker_profiles", "follow_up_required", server_default=None)
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    column_names = {column["name"] for column in inspector.get_columns("worker_profiles")}
+
+    if "internal_notes" not in column_names:
+        op.add_column("worker_profiles", sa.Column("internal_notes", sa.Text(), nullable=True))
+
+    if "follow_up_required" not in column_names:
+        op.add_column(
+            "worker_profiles",
+            sa.Column("follow_up_required", sa.Boolean(), nullable=False, server_default=sa.false()),
+        )
+        op.alter_column("worker_profiles", "follow_up_required", server_default=None)
 
 
 def downgrade() -> None:
-    op.drop_column("worker_profiles", "follow_up_required")
-    op.drop_column("worker_profiles", "internal_notes")
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    column_names = {column["name"] for column in inspector.get_columns("worker_profiles")}
+
+    if "follow_up_required" in column_names:
+        op.drop_column("worker_profiles", "follow_up_required")
+    if "internal_notes" in column_names:
+        op.drop_column("worker_profiles", "internal_notes")
