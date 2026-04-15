@@ -13,10 +13,12 @@ def compute_timesheet_pay(
     mult = float(job.overtime_multiplier or 1.5)
 
     ot_hours = max(0.0, overtime_hours)
-    regular = max(0.0, actual_hours - ot_hours)
+    regular_actual = max(0.0, actual_hours - ot_hours)
 
     if job.pay_model == PayModel.hourly:
-        gross = regular * hr + ot_hours * hr * mult
+        payable_hours = max(0.0, max(actual_hours, scheduled_hours))
+        regular_hourly = max(0.0, payable_hours - ot_hours)
+        gross = regular_hourly * hr + ot_hours * hr * mult
         return round(gross, 2), ot_hours
 
     if job.pay_model == PayModel.per_shift:
@@ -24,6 +26,6 @@ def compute_timesheet_pay(
         return round(gross, 2), ot_hours
 
     # mixed: hourly with per-shift minimum when shift worked
-    hourly_part = regular * hr + ot_hours * hr * mult
+    hourly_part = regular_actual * hr + ot_hours * hr * mult
     gross = max(hourly_part, ps if actual_hours > 0 else 0.0)
     return round(gross, 2), ot_hours

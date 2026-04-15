@@ -17,6 +17,18 @@ from app.services.payroll_calc import compute_timesheet_pay
 from app.services.worker_ratings import POINTS_PER_COMPLETED_SHIFT, adjust_worker_points
 
 
+def _hours_since_shift_start(shift: Shift, end_time: datetime | None) -> float:
+    if end_time is None:
+        return 0.0
+    starts_at = shift.starts_at
+    if starts_at.tzinfo is None:
+        starts_at = starts_at.replace(tzinfo=timezone.utc)
+    ends_at = end_time
+    if ends_at.tzinfo is None:
+        ends_at = ends_at.replace(tzinfo=timezone.utc)
+    return max(0.0, (ends_at - starts_at).total_seconds() / 3600.0)
+
+
 async def ensure_timesheet_for_assignment(
     db: AsyncSession,
     assignment: ShiftAssignment,
@@ -35,9 +47,9 @@ async def ensure_timesheet_for_assignment(
     job = shift.job_order
 
     sched_h = (shift.ends_at - shift.starts_at).total_seconds() / 3600.0
-    actual_h = attendance.total_hours if attendance and attendance.total_hours else 0.0
-    if actual_h <= 0 and attendance and attendance.clock_in_time and attendance.clock_out_time:
-        actual_h = (attendance.clock_out_time - attendance.clock_in_time).total_seconds() / 3600.0
+    actual_h = _hours_since_shift_start(shift, attendance.clock_out_time if attendance else None)
+    if actual_h <= 0 and attendance and attendance.total_hours:
+        actual_h = float(attendance.total_hours)
 
     overtime_h = max(0.0, actual_h - sched_h) if sched_h > 0 else 0.0
     gross, ot = compute_timesheet_pay(job, sched_h, actual_h, overtime_h)
@@ -79,9 +91,9 @@ async def mark_assignment_completed_if_clocked(
 
 def _hours_from_attendance(attendance: AttendanceRecord, shift: Shift) -> tuple[float, float, float]:
     sched_h = (shift.ends_at - shift.starts_at).total_seconds() / 3600.0
-    actual_h = float(attendance.total_hours or 0.0)
-    if actual_h <= 0 and attendance.clock_in_time and attendance.clock_out_time:
-        actual_h = (attendance.clock_out_time - attendance.clock_in_time).total_seconds() / 3600.0
+    actual_h = _hours_since_shift_start(shift, attendance.clock_out_time)
+    if actual_h <= 0:
+        actual_h = float(attendance.total_hours or 0.0)
     overtime_h = max(0.0, actual_h - sched_h) if sched_h > 0 else 0.0
     return sched_h, actual_h, overtime_h
 

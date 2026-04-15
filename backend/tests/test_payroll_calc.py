@@ -13,6 +13,28 @@ def test_hourly_pay():
     assert gross == round(8 * 10 + 2 * 10 * 1.5, 2)
 
 
+def test_hourly_short_shift_still_pays_full_scheduled():
+    job = JobOrder(
+        pay_model=PayModel.hourly,
+        hourly_rate=10.0,
+        per_shift_rate=None,
+        overtime_multiplier=1.5,
+    )
+    gross, _ = compute_timesheet_pay(job, 8.0, 6.0, 0.0)
+    assert gross == 80.0
+
+
+def test_hourly_exact_scheduled_pay_unchanged():
+    job = JobOrder(
+        pay_model=PayModel.hourly,
+        hourly_rate=10.0,
+        per_shift_rate=None,
+        overtime_multiplier=1.5,
+    )
+    gross, _ = compute_timesheet_pay(job, 8.0, 8.0, 0.0)
+    assert gross == 80.0
+
+
 def test_per_shift():
     job = JobOrder(pay_model=PayModel.per_shift, hourly_rate=0, per_shift_rate=100.0, overtime_multiplier=1.5)
     gross, _ = compute_timesheet_pay(job, 8.0, 8.0, 0.0)
