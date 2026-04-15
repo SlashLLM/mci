@@ -182,6 +182,7 @@ class JobOrderDetail(JobOrderOut):
     overlapping_assignments: list[JobOverlapAssignmentOut] = Field(default_factory=list)
     has_ta_payroll: bool = False
     viewer_can_vet_assignments: bool = True
+    all_confirmed_workers_clocked_out: bool = False
 
 
 class JobOrderMatchWeightsUpdate(BaseModel):

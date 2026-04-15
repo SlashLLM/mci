@@ -10,6 +10,7 @@ from app.auth.deps import require_roles
 from app.db.session import get_db
 from app.models import (
     AssignmentStatus,
+    AttendanceRecord,
     ClientOrganization,
     JobOrder,
     JobOrderStatus,
@@ -432,6 +433,24 @@ async def _slot_totals(db: AsyncSession, job_id: int) -> tuple[int, int]:
     return int(total_slots or 0), int(filled or 0)
 
 
+async def _count_confirmed_assignments_without_clock_out(db: AsyncSession, job_id: int) -> int:
+    missing = await db.scalar(
+        select(func.count(ShiftAssignment.id))
+        .join(Shift, ShiftAssignment.shift_id == Shift.id)
+        .outerjoin(AttendanceRecord, AttendanceRecord.shift_assignment_id == ShiftAssignment.id)
+        .where(
+            Shift.job_order_id == job_id,
+            ShiftAssignment.status == AssignmentStatus.confirmed,
+            AttendanceRecord.clock_out_time.is_(None),
+        )
+    )
+    return int(missing or 0)
+
+
+async def _all_confirmed_workers_clocked_out(db: AsyncSession, job_id: int) -> bool:
+    return (await _count_confirmed_assignments_without_clock_out(db, job_id)) == 0
+
+
 async def _to_out(db: AsyncSession, job: JobOrder) -> JobOrderOut:
     await refresh_job_order_fill_status(db, job)
     total_slots, filled = await _slot_totals(db, job.id)
@@ -465,6 +484,7 @@ async def _to_detail_out(db: AsyncSession, job: JobOrder, viewer: User) -> JobOr
     has_ta_payroll = contract is not None
     viewer_can_vet = await user_can_vet_shift_assignments(db, viewer, job)
     overlapping_assignments = await _overlapping_assignments_for_job(db, job) if viewer_can_vet else []
+    all_confirmed_workers_clocked_out = await _all_confirmed_workers_clocked_out(db, job.id)
     effective_weights = await get_effective_weights_for_job(db, job)
     return JobOrderDetail(
         id=job.id,
@@ -497,6 +517,7 @@ async def _to_detail_out(db: AsyncSession, job: JobOrder, viewer: User) -> JobOr
         overlapping_assignments=overlapping_assignments,
         has_ta_payroll=has_ta_payroll,
         viewer_can_vet_assignments=viewer_can_vet,
+        all_confirmed_workers_clocked_out=all_confirmed_workers_clocked_out,
     )
 
 
@@ -832,7 +853,7 @@ async def cancel_job_order(
 async def complete_job_order(
     job_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
-    user: Annotated[User, Depends(require_roles(UserRole.ta, UserRole.admin))],
+    user: Annotated[User, Depends(require_roles(UserRole.ta, UserRole.client, UserRole.admin))],
 ):
     job = await db.get(JobOrder, job_id)
     if not job or not await _can_access_job(db, user, job):
@@ -841,6 +862,12 @@ async def complete_job_order(
         raise HTTPException(400, detail="Cannot complete draft or cancelled job")
     if job.status == JobOrderStatus.completed:
         return {"ok": True, "status": job.status.value}
+    pending_clock_outs = await _count_confirmed_assignments_without_clock_out(db, job.id)
+    if pending_clock_outs > 0:
+        raise HTTPException(
+            400,
+            detail=f"Cannot complete job until all confirmed workers clock out ({pending_clock_outs} pending)",
+        )
     job.status = JobOrderStatus.completed
     await log_audit(
         db,

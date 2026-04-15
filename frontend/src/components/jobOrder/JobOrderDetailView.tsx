@@ -178,6 +178,7 @@ export type JobOrderDetail = {
   }[];
   has_ta_payroll?: boolean;
   viewer_can_vet_assignments?: boolean;
+  all_confirmed_workers_clocked_out?: boolean;
 };
 
 type WorkerProfileDetail = {
@@ -462,6 +463,9 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
   const clientPublish = variant === "client" && job.status === "draft";
   const taPublish = variant === "ta" && job.status === "draft";
   const taCancel = variant === "ta" && job.status !== "cancelled" && job.status !== "completed";
+  const clientComplete = variant === "client" && !["draft", "cancelled", "completed"].includes(job.status);
+  const allConfirmedWorkersClockedOut = job.all_confirmed_workers_clocked_out ?? true;
+  const clientCompleteDisabled = clientComplete && !allConfirmedWorkersClockedOut;
   const taComplete = variant === "ta" && !["draft", "cancelled", "completed"].includes(job.status);
 
   const rosterName = "font-semibold text-on-surface";
@@ -628,13 +632,24 @@ export function JobOrderDetailView({ variant, basePath }: { variant: Variant; ba
                 {t("job_action_cancel")}
               </button>
             )}
-            {taComplete && (
-              <button type="button" className="bg-emerald-700 text-white px-3 py-2 rounded-xl text-sm font-semibold" onClick={complete}>
+            {(clientComplete || taComplete) && (
+              <button
+                type="button"
+                className="bg-emerald-700 text-white px-3 py-2 rounded-xl text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={complete}
+                disabled={clientCompleteDisabled}
+                title={clientCompleteDisabled ? "All confirmed workers must clock out before completion." : undefined}
+              >
                 {t("job_action_complete")}
               </button>
             )}
           </div>
         </div>
+        {clientCompleteDisabled && (
+          <p className="mt-2 text-xs text-on-surface-variant">
+            All confirmed workers must clock out before you can mark this job as completed.
+          </p>
+        )}
       </section>
       {msg && <p className={msgErr}>{msg}</p>}
 
