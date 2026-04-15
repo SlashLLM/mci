@@ -1,4 +1,4 @@
-"""Stakeholder notifications on worker clock-in and clock-out (client org + TA when contracted)."""
+"""Stakeholder notifications for worker clock events and geofence mismatches."""
 
 import asyncio
 import os
@@ -67,9 +67,10 @@ async def _seed(active_contract: bool):
         await session.flush()
 
         client_user = User(phone="+18881110001", role=UserRole.client, locale="en", client_org_id=org.id)
+        client_user_2 = User(phone="+18881110004", role=UserRole.client, locale="en", client_org_id=org.id)
         ta_user = User(phone="+18881110002", role=UserRole.ta, locale="en")
         worker_user = User(phone="+18881110003", role=UserRole.worker, locale="en")
-        session.add_all([client_user, ta_user, worker_user])
+        session.add_all([client_user, client_user_2, ta_user, worker_user])
         await session.flush()
 
         worker = WorkerProfile(
@@ -134,6 +135,7 @@ async def _seed(active_contract: bool):
         await session.commit()
         return engine, Session, {
             "client_user_id": client_user.id,
+            "client_user_2_id": client_user_2.id,
             "ta_user_id": ta_user.id,
             "worker_user_id": worker_user.id,
             "job_id": job.id,
@@ -194,12 +196,20 @@ def test_clock_in_out_without_ta_contract_notifies_client_only():
         assert r_out.status_code == 200, r_out.text
 
         notes = asyncio.run(
-            _notifications_for_users(Session, ids["client_user_id"], ids["ta_user_id"])
+            _notifications_for_users(
+                Session,
+                ids["client_user_id"],
+                ids["client_user_2_id"],
+                ids["ta_user_id"],
+            )
         )
         client_notes = [n for n in notes if n.user_id == ids["client_user_id"]]
+        client2_notes = [n for n in notes if n.user_id == ids["client_user_2_id"]]
         ta_notes = [n for n in notes if n.user_id == ids["ta_user_id"]]
         assert len(client_notes) == 2
+        assert len(client2_notes) == 2
         assert {n.payload["type"] for n in client_notes} == {"worker_clock_in", "worker_clock_out"}
+        assert {n.payload["type"] for n in client2_notes} == {"worker_clock_in", "worker_clock_out"}
         assert all(n.payload["job_order_id"] == ids["job_id"] for n in client_notes)
         assert ta_notes == []
 
@@ -233,12 +243,118 @@ def test_clock_in_out_with_active_ta_contract_notifies_client_and_ta():
         assert r_out.status_code == 200, r_out.text
 
         notes = asyncio.run(
-            _notifications_for_users(Session, ids["client_user_id"], ids["ta_user_id"])
+            _notifications_for_users(
+                Session,
+                ids["client_user_id"],
+                ids["client_user_2_id"],
+                ids["ta_user_id"],
+            )
         )
         client_notes = [n for n in notes if n.user_id == ids["client_user_id"]]
+        client2_notes = [n for n in notes if n.user_id == ids["client_user_2_id"]]
         ta_notes = [n for n in notes if n.user_id == ids["ta_user_id"]]
         assert len(client_notes) == 2
+        assert len(client2_notes) == 2
         assert len(ta_notes) == 2
         assert {n.payload["type"] for n in client_notes} == {"worker_clock_in", "worker_clock_out"}
+        assert {n.payload["type"] for n in client2_notes} == {"worker_clock_in", "worker_clock_out"}
         assert {n.payload["type"] for n in ta_notes} == {"worker_clock_in", "worker_clock_out"}
         assert all("Alex Worker" in n.body for n in notes)
+
+
+def test_geofence_clock_in_mismatch_notifies_job_creator_and_contracted_ta_only():
+    with _clock_client(_seed(active_contract=True)) as (client, Session, token, ids):
+        qr_in = create_attendance_qr_token(
+            job_id=ids["job_id"],
+            shift_id=ids["shift_id"],
+            action="in",
+            shift_ends_at=ids["shift_ends_at"],
+        )
+        r_in = client.post(
+            "/attendance/qr-clock",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"token": qr_in, "lat": 0.0, "lng": 0.0},
+        )
+        assert r_in.status_code == 400, r_in.text
+        detail = r_in.json()["detail"]
+        assert detail["code"] == "geofence_clock_in_blocked"
+
+        notes = asyncio.run(
+            _notifications_for_users(
+                Session,
+                ids["client_user_id"],
+                ids["client_user_2_id"],
+                ids["ta_user_id"],
+            )
+        )
+        creator_notes = [n for n in notes if n.user_id == ids["client_user_id"]]
+        other_client_notes = [n for n in notes if n.user_id == ids["client_user_2_id"]]
+        ta_notes = [n for n in notes if n.user_id == ids["ta_user_id"]]
+
+        assert len(creator_notes) == 1
+        assert len(ta_notes) == 1
+        assert other_client_notes == []
+        assert creator_notes[0].payload["type"] == "worker_geofence_mismatch"
+        assert creator_notes[0].payload["event"] == "clock_in"
+        assert ta_notes[0].payload["type"] == "worker_geofence_mismatch"
+        assert ta_notes[0].payload["event"] == "clock_in"
+
+
+def test_geofence_clock_out_mismatch_notifies_job_creator_and_contracted_ta_only():
+    with _clock_client(_seed(active_contract=True)) as (client, Session, token, ids):
+        qr_in = create_attendance_qr_token(
+            job_id=ids["job_id"],
+            shift_id=ids["shift_id"],
+            action="in",
+            shift_ends_at=ids["shift_ends_at"],
+        )
+        r_in = client.post(
+            "/attendance/qr-clock",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"token": qr_in, "lat": 1.0, "lng": 103.0},
+        )
+        assert r_in.status_code == 200, r_in.text
+
+        qr_out = create_attendance_qr_token(
+            job_id=ids["job_id"],
+            shift_id=ids["shift_id"],
+            action="out",
+            shift_ends_at=ids["shift_ends_at"],
+        )
+        r_out = client.post(
+            "/attendance/qr-clock",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"token": qr_out, "lat": 0.0, "lng": 0.0},
+        )
+        assert r_out.status_code == 200, r_out.text
+        assert r_out.json()["geofence_valid"] is False
+
+        notes = asyncio.run(
+            _notifications_for_users(
+                Session,
+                ids["client_user_id"],
+                ids["client_user_2_id"],
+                ids["ta_user_id"],
+            )
+        )
+        creator_notes = [n for n in notes if n.user_id == ids["client_user_id"]]
+        other_client_notes = [n for n in notes if n.user_id == ids["client_user_2_id"]]
+        ta_notes = [n for n in notes if n.user_id == ids["ta_user_id"]]
+
+        # creator and TA each get normal clock-in + mismatch clock-out
+        assert len(creator_notes) == 2
+        assert len(ta_notes) == 2
+        assert len(other_client_notes) == 1
+        assert other_client_notes[0].payload["type"] == "worker_clock_in"
+        assert {n.payload["type"] for n in creator_notes} == {
+            "worker_clock_in",
+            "worker_geofence_mismatch",
+        }
+        assert {n.payload["type"] for n in ta_notes} == {
+            "worker_clock_in",
+            "worker_geofence_mismatch",
+        }
+        mismatch_creator = next(n for n in creator_notes if n.payload["type"] == "worker_geofence_mismatch")
+        mismatch_ta = next(n for n in ta_notes if n.payload["type"] == "worker_geofence_mismatch")
+        assert mismatch_creator.payload["event"] == "clock_out"
+        assert mismatch_ta.payload["event"] == "clock_out"

@@ -31,7 +31,10 @@ from app.services.attendance_rules import (
     is_past_shift_end,
 )
 from app.services.audit import log_audit
-from app.services.clock_event_notifications import notify_stakeholders_of_worker_clock_event
+from app.services.clock_event_notifications import (
+    notify_stakeholders_of_worker_clock_event,
+    notify_stakeholders_of_worker_geofence_mismatch,
+)
 from app.services.timesheet_flow import get_clock_out_pay_summary, mark_assignment_completed_if_clocked
 import os
 import uuid
@@ -122,6 +125,18 @@ async def perform_clock_in(
     job = await db.get(JobOrder, a.shift.job_order_id)
     ok, dist = validate_clock_geofence(job, lat, lng)
     if not ok:
+        if job:
+            await notify_stakeholders_of_worker_geofence_mismatch(
+                db,
+                job=job,
+                shift=shift,
+                assignment=a,
+                event="clock_in",
+                clock_time=now,
+                distance_m=dist,
+            )
+            # This path raises an HTTPException; commit mismatch notifications first.
+            await db.commit()
         raise HTTPException(
             status_code=400,
             detail={
@@ -237,15 +252,26 @@ async def perform_clock_out(
         new_values={"geofence_ok": ok, "distance_m": dist, "qr": photo is None},
     )
     if job:
-        await notify_stakeholders_of_worker_clock_event(
-            db,
-            job=job,
-            shift=shift,
-            assignment=a,
-            attendance_record_id=rec.id,
-            event="clock_out",
-            clock_time=out_now,
-        )
+        if ok:
+            await notify_stakeholders_of_worker_clock_event(
+                db,
+                job=job,
+                shift=shift,
+                assignment=a,
+                attendance_record_id=rec.id,
+                event="clock_out",
+                clock_time=out_now,
+            )
+        else:
+            await notify_stakeholders_of_worker_geofence_mismatch(
+                db,
+                job=job,
+                shift=shift,
+                assignment=a,
+                event="clock_out",
+                clock_time=out_now,
+                distance_m=dist,
+            )
     return {
         "ok": True,
         "geofence_valid": ok,
