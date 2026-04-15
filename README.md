@@ -63,11 +63,28 @@ Open http://localhost:5173 — API proxied to http://localhost:8000.
 | Role   | Username | Password      |
 |--------|----------|---------------|
 | Worker | worker   | demo_worker   |
+| Worker | worker_2 | demo_worker_2 |
+| Worker | worker_3 | demo_worker_3 |
+| Worker | worker_4 | demo_worker_4 |
+| Worker | worker_5 | demo_worker_5 |
+| Worker | worker_6 | demo_worker_6 |
+| Worker | worker_7 | demo_worker_7 |
+| Worker | worker_8 | demo_worker_8 |
 | TA     | ta       | demo_ta       |
+| TA     | ta_2     | demo_ta_2     |
 | Client | client   | demo_client   |
+| Client | client_2 | demo_client_2 |
 | Admin  | admin    | demo_admin    |
 
-(Seeded phones `+6590000001`–`004` still work with OTP when `OTP_DEV_MODE=true`.)
+(Seeded phones `+6590000001` to `+6590000013` still work with OTP when `OTP_DEV_MODE=true`.)
+
+## Seed inventory (local demo)
+
+`python -m app.scripts.seed_demo` now seeds realistic local demo states:
+- Multiple organizations, TA/client users, and a broader worker pool with varied skills/tier/rating/location.
+- Job orders across draft, open, partially-filled/live, and completed statuses with multiple shifts.
+- Mixed assignment and offer outcomes (confirmed, waitlisted, applied, rejected, pending, declined, expired).
+- Attendance and payroll trails (present, late, absent, flagged; pending through released timesheets; paid payment record).
 
 ## Environment
 

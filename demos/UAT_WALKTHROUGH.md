@@ -18,7 +18,7 @@ Wait until migrations + seed finish in the `api` logs, then open:
 Demo OTP is enabled in compose (`OTP_DEV_MODE=true`, code `123456`).  
 To skip re-seeding on restart: `RUN_SEED=false docker compose up`
 
-The seed does **not** create an active TA–client contract: TAs start with no client engagements until the client requests a TA (or the TA enrolls an org) and the TA accepts.
+The seed includes one **active** TA-client contract for the primary demo org so TA payroll and verification screens are populated immediately, plus historical contract records for realism.
 
 ### Hybrid dev (DB in Docker, code on host)
 
@@ -36,6 +36,23 @@ Then run backend + frontend locally as in the main README.
 | +6590000001 | Worker | Accept offer, clock in/out |
 | +6590000003 | Client | Endorse timesheets, live attendance |
 | +6590000004 | Admin  | Audit logs, deactivate user (PDPA MVP) |
+| +6590000009 | TA 2   | Secondary TA data for contract history |
+| +6590000013 | Client 2 | Completed payroll trail and contract history |
+| +6590000005 to +6590000012 | Worker pool | Mixed assignment/offer outcomes |
+
+Username/password demo logins are also seeded:
+- `worker`, `worker_2` ... `worker_8`
+- `ta`, `ta_2`
+- `client`, `client_2`
+- `admin`
+
+## Seeded scenarios to demo quickly
+
+- **Draft flow**: `Demo packing shift` starts as draft for TA publish walkthrough.
+- **Open demand**: `Dock loading weekend rush` has future shifts with pending/accepted/declined/expired offers.
+- **Live attendance**: `Inventory recount night shift` includes confirmed + waitlisted workers with present and late clock-ins.
+- **Completed payroll trail**: `Retail pop-up teardown` includes present/absent/flagged attendance, disputed/verified timesheets, and a paid payment record.
+- **Profile depth**: worker tiers, ratings, skills, certs, and preferred workers are varied to make matching views realistic.
 
 ## Happy path
 

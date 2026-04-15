@@ -33,20 +33,24 @@ class TokenResponse(BaseModel):
 class WorkerEmailOtpRequest(BaseModel):
     email: EmailStr
     locale: str | None = Field(default=None, description="en|zh — stored on new accounts")
+    login_only: bool = Field(default=False, description="If true, reject unknown emails instead of allowing signup")
 
 
 class WorkerEmailOtpVerify(BaseModel):
     email: EmailStr
     code: str = Field(..., min_length=4, max_length=10)
     locale: str | None = Field(default=None, description="en|zh — used when creating a new account")
+    login_only: bool = Field(default=False, description="If true, reject unknown emails instead of creating an account")
 
 
 class ClientEmailOtpRequest(BaseModel):
     email: EmailStr
     locale: str | None = Field(default=None, description="en|zh — stored on new accounts")
+    login_only: bool = Field(default=False, description="If true, reject unknown emails instead of allowing signup")
 
 
 class ClientEmailOtpVerify(BaseModel):
     email: EmailStr
     code: str = Field(..., min_length=4, max_length=10)
     locale: str | None = Field(default=None, description="en|zh — used when creating a new account")
+    login_only: bool = Field(default=False, description="If true, reject unknown emails instead of creating an account")

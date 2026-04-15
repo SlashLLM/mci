@@ -31,6 +31,7 @@ from app.services.attendance_rules import (
     is_past_shift_end,
 )
 from app.services.audit import log_audit
+from app.services.clock_event_notifications import notify_stakeholders_of_worker_clock_event
 from app.services.timesheet_flow import get_clock_out_pay_summary, mark_assignment_completed_if_clocked
 import os
 import uuid
@@ -166,6 +167,16 @@ async def perform_clock_in(
         entity_id=str(rec.id),
         new_values={"geofence_ok": ok, "distance_m": dist, "qr": photo is None},
     )
+    if job:
+        await notify_stakeholders_of_worker_clock_event(
+            db,
+            job=job,
+            shift=shift,
+            assignment=a,
+            attendance_record_id=rec.id,
+            event="clock_in",
+            clock_time=now,
+        )
     return {"ok": True, "geofence_valid": ok, "distance_m": dist, "status": rec.status.value}
 
 
@@ -200,7 +211,10 @@ async def perform_clock_out(
     rec.clock_out_lat = lat
     rec.clock_out_lng = lng
     if rec.clock_in_time and rec.clock_out_time:
-        rec.total_hours = (rec.clock_out_time - rec.clock_in_time).total_seconds() / 3600.0
+        cin = rec.clock_in_time
+        if cin.tzinfo is None:
+            cin = cin.replace(tzinfo=timezone.utc)
+        rec.total_hours = (rec.clock_out_time - cin).total_seconds() / 3600.0
     if not ok:
         rec.status = AttendanceStatus.flagged
     elif rec.clock_in_time and (
@@ -222,6 +236,16 @@ async def perform_clock_out(
         entity_id=str(rec.id),
         new_values={"geofence_ok": ok, "distance_m": dist, "qr": photo is None},
     )
+    if job:
+        await notify_stakeholders_of_worker_clock_event(
+            db,
+            job=job,
+            shift=shift,
+            assignment=a,
+            attendance_record_id=rec.id,
+            event="clock_out",
+            clock_time=out_now,
+        )
     return {
         "ok": True,
         "geofence_valid": ok,

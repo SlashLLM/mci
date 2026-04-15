@@ -122,6 +122,7 @@ class JobAssignmentWorkerOut(BaseModel):
     location_lat: Optional[float] = None
     location_lng: Optional[float] = None
     is_preferred: bool = False
+    tier: str = "standard"
 
 
 class JobDeclinedWorkerOut(BaseModel):

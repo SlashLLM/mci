@@ -324,9 +324,9 @@ def worker_expired_application_setup():
             )
             s.add(assignment)
             await s.commit()
-            return engine, Session, worker_user.id
+            return engine, Session, worker_user.id, assignment.id
 
-    engine, Session, worker_user_id = asyncio.run(init())
+    engine, Session, worker_user_id, assignment_id = asyncio.run(init())
 
     async def override_get_db():
         async with Session() as session:
@@ -341,14 +341,14 @@ def worker_expired_application_setup():
     worker_token = create_access_token(str(worker_user_id), {})
     try:
         with TestClient(_app) as client:
-            yield client, worker_token
+            yield client, worker_token, assignment_id
     finally:
         _app.dependency_overrides.clear()
         asyncio.run(engine.dispose())
 
 
 def test_expired_application_surfaces_as_rejected_in_history_and_schedule(worker_expired_application_setup):
-    client, worker_token = worker_expired_application_setup
+    client, worker_token, _assignment_id = worker_expired_application_setup
 
     history = client.get("/worker/history?status=rejected", headers={"Authorization": f"Bearer {worker_token}"})
     assert history.status_code == 200, history.text
@@ -367,3 +367,23 @@ def test_expired_application_surfaces_as_rejected_in_history_and_schedule(worker
     assert schedule_data["pending_applications"] == []
     assert len(schedule_data["past_shifts"]) == 1
     assert schedule_data["past_shifts"][0]["status"] == "rejected"
+
+
+def test_worker_history_assignment_detail(worker_expired_application_setup):
+    client, worker_token, assignment_id = worker_expired_application_setup
+
+    detail = client.get(
+        f"/worker/history/assignments/{assignment_id}",
+        headers={"Authorization": f"Bearer {worker_token}"},
+    )
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    assert body["assignment_id"] == assignment_id
+    assert body["history_bucket"] == "rejected"
+    assert body["job"]["title"] == "Expired Application Shift"
+    assert body["shift"]["id"] is not None
+    assert body["timesheet"] is None
+    assert body["payment"] is None
+
+    other = client.get("/worker/history/assignments/99999", headers={"Authorization": f"Bearer {worker_token}"})
+    assert other.status_code == 404

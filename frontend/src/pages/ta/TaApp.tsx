@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { api, apiUrl, getToken } from "../../api";
-import { fmtShiftDate, formatTimesheetRate } from "../../utils/timesheetFormat";
+import { fmtShiftDate, formatSgd, formatTimesheetRate } from "../../utils/timesheetFormat";
 import { JobOrderForm } from "../../components/jobOrder/JobOrderForm";
 import { jobStatusLabelKey } from "../../components/jobOrder/jobOrderStatus";
 
@@ -524,7 +524,7 @@ export function TaTimesheetsPage() {
               </div>
               <div>
                 <dt className="text-xs font-medium text-on-surface-variant">{t("timesheet_col_gross")}</dt>
-                <dd className="font-semibold">${selected.gross_pay.toFixed(2)}</dd>
+                <dd className="font-semibold">{formatSgd(selected.gross_pay)}</dd>
               </div>
               <div>
                 <dt className="text-xs font-medium text-on-surface-variant">{t("timesheet_col_status")}</dt>
@@ -622,7 +622,7 @@ export function TaTimesheetsPage() {
                       })
                     : "—"}
                 </td>
-                <td className="px-3 py-2 font-semibold">${x.gross_pay.toFixed(2)}</td>
+                <td className="px-3 py-2 font-semibold">{formatSgd(x.gross_pay)}</td>
                 <td className="px-3 py-2">
                   <span
                     className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${timesheetStatusBadgeClass(x.status)}`}

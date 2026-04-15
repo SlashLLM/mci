@@ -28,7 +28,7 @@ function fmtDate(iso: string) {
 }
 
 function fmtMoney(n: number) {
-  return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" }).format(n);
+  return `SGD ${Number(n || 0).toFixed(2)}`;
 }
 
 type ClockNoticeKind = "error" | "warning" | "success" | "info";
@@ -903,6 +903,238 @@ type HistoryRow = {
   shift: { id: number; starts_at: string; ends_at: string };
 };
 
+type HistoryAssignmentDetailPayload = {
+  assignment_id: number;
+  assignment_status: string;
+  history_bucket: string;
+  waitlist_rank: number | null;
+  job: {
+    id: number;
+    title: string;
+    job_type: string;
+    location_address: string;
+    hourly_rate: number | null;
+    per_shift_rate: number | null;
+    pay_model: string;
+  };
+  shift: {
+    id: number;
+    starts_at: string;
+    ends_at: string;
+    workers_required: number;
+  };
+  timesheet: {
+    id: number;
+    status: string;
+    gross_pay: number;
+    scheduled_hours: number;
+    actual_hours: number;
+    overtime_hours: number;
+    hourly_rate_snapshot: number;
+    per_shift_rate_snapshot: number | null;
+    dispute_flag: boolean;
+    clock_in_at: string | null;
+    clock_out_at: string | null;
+  } | null;
+  payment: { status: string; paid_at: string | null } | null;
+};
+
+function jobOrderRateLabel(job: HistoryAssignmentDetailPayload["job"]): string {
+  const pseudo: MarketplaceShift = {
+    shift_id: 0,
+    job_id: job.id,
+    title: job.title,
+    job_type: job.job_type,
+    starts_at: "",
+    ends_at: "",
+    hourly_rate: job.hourly_rate ?? undefined,
+    per_shift_rate: job.per_shift_rate ?? undefined,
+  };
+  return rateLabel(pseudo);
+}
+
+function HistoryAssignmentDetailPage() {
+  const { t } = useTranslation();
+  const { assignmentId } = useParams<{ assignmentId: string }>();
+  const id = assignmentId ? Number.parseInt(assignmentId, 10) : NaN;
+  const [data, setData] = useState<HistoryAssignmentDetailPayload | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!Number.isFinite(id)) {
+      setLoading(false);
+      setErr("Invalid assignment");
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setErr(null);
+    api<HistoryAssignmentDetailPayload>(`/worker/history/assignments/${id}`)
+      .then((r) => {
+        if (!cancelled) setData(r);
+      })
+      .catch((e) => {
+        if (!cancelled) setErr(String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  function timesheetStatusLabel(status: string): string {
+    const key = `worker_timesheet_status_${status}`;
+    const translated = t(key);
+    return translated === key ? titleCaseStatus(status) : translated;
+  }
+
+  function paymentBatchLabel(status: string): string {
+    const key = `worker_payment_batch_status_${status}`;
+    const translated = t(key);
+    return translated === key ? titleCaseStatus(status) : translated;
+  }
+
+  return (
+    <div className="mx-auto max-w-3xl px-4 py-10 md:px-8">
+      <Link
+        to="/worker/history"
+        className="mb-8 inline-flex items-center gap-2 text-sm font-bold text-primary transition-colors hover:text-primary-dim"
+      >
+        <MatIcon name="arrow_back" className="text-lg" />
+        {t("worker_history_detail_back")}
+      </Link>
+
+      {loading && <p className="text-on-surface-variant">{t("job_detail_profile_loading")}</p>}
+      {err && !loading && <p className="text-sm text-error">{err}</p>}
+      {data && !loading && !err && (
+        <article className="overflow-hidden rounded-2xl border border-outline-variant/10 bg-surface-container-lowest shadow-sm">
+          <div className="border-b border-outline-variant/10 bg-surface-container-low px-6 py-4">
+            <span className="text-xs font-bold uppercase tracking-[0.2em] text-primary">{t("worker_history_detail_eyebrow")}</span>
+            <h1 className="mt-2 font-headline text-3xl font-extrabold tracking-tight">{data.job.title}</h1>
+            <p className="mt-2 text-sm text-on-surface-variant">{data.job.job_type}</p>
+            <p className="mt-3 text-2xl font-bold text-primary">{jobOrderRateLabel(data.job)}</p>
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <span
+                className={`inline-flex rounded-full px-3 py-1 text-xs font-bold uppercase tracking-wide ${
+                  data.history_bucket === "accepted"
+                    ? "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-200"
+                    : data.history_bucket === "waitlisted"
+                      ? "bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200"
+                      : data.history_bucket === "pending"
+                        ? "bg-sky-100 text-sky-900 dark:bg-sky-900/40 dark:text-sky-200"
+                        : data.history_bucket === "rejected"
+                          ? "bg-rose-100 text-rose-900 dark:bg-rose-900/40 dark:text-rose-200"
+                          : "bg-surface-container-high text-on-surface"
+                }`}
+              >
+                {t(`worker_history_bucket_${data.history_bucket}`)}
+              </span>
+              <span className="text-xs text-on-surface-variant">
+                {t("worker_history_detail_assignment_label")}: {titleCaseStatus(data.assignment_status)}
+              </span>
+            </div>
+            {data.waitlist_rank != null && (data.history_bucket === "waitlisted" || data.history_bucket === "pending") && (
+              <p className="mt-2 text-xs font-semibold text-amber-800 dark:text-amber-200">
+                {t("worker_history_waitlist_rank", { rank: data.waitlist_rank })}
+              </p>
+            )}
+          </div>
+          <div className="space-y-6 p-6">
+            <div>
+              <h2 className="mb-2 text-[10px] font-bold uppercase tracking-widest text-primary">{t("worker_history_detail_section_location")}</h2>
+              <p className="flex items-start gap-2 text-on-surface">
+                <MatIcon name="location_on" className="text-lg text-on-surface-variant" />
+                <span className="break-words">{data.job.location_address}</span>
+              </p>
+            </div>
+            <div>
+              <h2 className="mb-2 text-[10px] font-bold uppercase tracking-widest text-primary">{t("worker_history_detail_section_schedule")}</h2>
+              <ul className="space-y-2 text-sm text-on-surface">
+                <li className="flex flex-wrap items-center gap-2">
+                  <MatIcon name="calendar_today" className="text-on-surface-variant" />
+                  <span>
+                    {fmtDate(data.shift.starts_at)} — {fmtDate(data.shift.ends_at)}
+                  </span>
+                </li>
+                <li className="flex flex-wrap items-center gap-2 text-on-surface-variant">
+                  <MatIcon name="schedule" className="text-on-surface-variant" />
+                  <span>
+                    {fmtTime(data.shift.starts_at)} – {fmtTime(data.shift.ends_at)}
+                  </span>
+                </li>
+              </ul>
+            </div>
+            <div>
+              <h2 className="mb-2 text-[10px] font-bold uppercase tracking-widest text-primary">{t("worker_history_detail_section_job")}</h2>
+              <p className="text-sm text-on-surface-variant">
+                {t("worker_history_job_id", { id: data.job.id })} · {t("worker_history_shift_id", { id: data.shift.id })} ·{" "}
+                {t("worker_history_assignment_id", { id: data.assignment_id })}
+              </p>
+            </div>
+            <div>
+              <h2 className="mb-2 text-[10px] font-bold uppercase tracking-widest text-primary">{t("worker_history_detail_section_timesheet")}</h2>
+              {!data.timesheet && <p className="text-sm text-on-surface-variant">{t("worker_history_detail_no_timesheet")}</p>}
+              {data.timesheet && (
+                <div className="space-y-3 rounded-xl bg-surface-container-low p-4 text-sm">
+                  <p>
+                    <span className="font-semibold text-on-surface">{t("timesheet_col_status")}: </span>
+                    <span className="text-on-surface-variant">{timesheetStatusLabel(data.timesheet.status)}</span>
+                  </p>
+                  <p>
+                    <span className="font-semibold text-on-surface">{t("worker_history_detail_timesheet_gross")}: </span>
+                    <span className="text-on-surface-variant">{fmtMoney(data.timesheet.gross_pay)}</span>
+                  </p>
+                  <p className="text-on-surface-variant">
+                    {t("worker_history_detail_timesheet_hours")}: {data.timesheet.actual_hours}
+                    {data.timesheet.overtime_hours > 0
+                      ? ` (${t("worker_history_detail_timesheet_ot")}: ${data.timesheet.overtime_hours})`
+                      : ""}
+                  </p>
+                  {(data.timesheet.clock_in_at || data.timesheet.clock_out_at) && (
+                    <p className="text-on-surface-variant">
+                      {data.timesheet.clock_in_at && (
+                        <>
+                          {t("worker_earnings_clock_in_short")} {fmtTime(data.timesheet.clock_in_at)}
+                        </>
+                      )}
+                      {data.timesheet.clock_in_at && data.timesheet.clock_out_at ? " · " : null}
+                      {data.timesheet.clock_out_at && (
+                        <>
+                          {t("worker_earnings_clock_out_short")} {fmtTime(data.timesheet.clock_out_at)}
+                        </>
+                      )}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+            <div>
+              <h2 className="mb-2 text-[10px] font-bold uppercase tracking-widest text-primary">{t("worker_history_detail_section_payment")}</h2>
+              {!data.timesheet && <p className="text-sm text-on-surface-variant">{t("worker_history_detail_payment_need_timesheet")}</p>}
+              {data.timesheet && !data.payment && (
+                <p className="text-sm text-on-surface-variant">{t("worker_history_detail_payment_hint_no_batch")}</p>
+              )}
+              {data.timesheet && data.payment && (
+                <div className="rounded-xl bg-surface-container-low p-4 text-sm">
+                  <p className="font-semibold text-on-surface">{paymentBatchLabel(data.payment.status)}</p>
+                  {data.payment.paid_at && (
+                    <p className="mt-1 text-on-surface-variant">
+                      {t("worker_history_detail_payment_paid_at", { date: fmtDate(data.payment.paid_at) })}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </article>
+      )}
+    </div>
+  );
+}
+
 function HistoryPage() {
   const { t } = useTranslation();
   const [filter, setFilter] = useState<"all" | "accepted" | "waitlisted" | "pending" | "rejected">("all");
@@ -1010,7 +1242,7 @@ function HistoryPage() {
                 )}
               </div>
               <Link
-                to={`/worker/marketplace/${row.shift.id}`}
+                to={`/worker/history/assignment/${row.assignment_id}`}
                 className="inline-flex shrink-0 items-center gap-1 text-sm font-bold text-primary hover:text-primary-dim"
               >
                 {t("worker_history_view_shift")} <MatIcon name="chevron_right" className="text-lg" />
@@ -1026,6 +1258,8 @@ function HistoryPage() {
   );
 }
 
+type CancelAssignmentResponse = { ok: boolean; late_cancellation?: boolean; threshold_hours?: number };
+
 function ShiftsPage() {
   const { t } = useTranslation();
   const [data, setData] = useState<WorkerSchedulePayload>({
@@ -1034,6 +1268,9 @@ function ShiftsPage() {
     past_shifts: [],
   });
   const [err, setErr] = useState<string | null>(null);
+  const [cancelNotice, setCancelNotice] = useState<string | null>(null);
+  const [cancellingAssignmentId, setCancellingAssignmentId] = useState<number | null>(null);
+  const [cancelRowErr, setCancelRowErr] = useState<Record<number, string>>({});
   const [selectedDay, setSelectedDay] = useState(() => localDateYmd(new Date()));
   const [visibleMonth, setVisibleMonth] = useState(() => startOfMonth(new Date()));
 
@@ -1137,6 +1374,42 @@ function ShiftsPage() {
     return t("worker_schedule_calendar_legend_past");
   }
 
+  async function refetchSchedule() {
+    const next = await api<WorkerSchedulePayload>("/worker/schedule");
+    setData(next);
+  }
+
+  async function handleCancelShift(item: ScheduleCalendarItem) {
+    if (item.bucket === "past") return;
+    setCancelRowErr((prev) => {
+      const next = { ...prev };
+      delete next[item.assignment_id];
+      return next;
+    });
+    setCancelNotice(null);
+    const confirmMsg =
+      item.status === "applied" ? t("my_shifts_cancel_confirm_withdraw") : t("my_shifts_cancel_confirm_assignment");
+    if (!window.confirm(confirmMsg)) return;
+    setCancellingAssignmentId(item.assignment_id);
+    try {
+      if (item.status === "applied") {
+        await api(`/worker/marketplace/shifts/${item.shift.id}/withdraw-application`, { method: "POST" });
+      } else {
+        const res = await api<CancelAssignmentResponse>(`/worker/assignments/${item.assignment_id}/cancel`, { method: "POST" });
+        if (res.late_cancellation) {
+          setCancelNotice(
+            t("my_shifts_cancel_success_late", { hours: res.threshold_hours != null ? String(res.threshold_hours) : "—" }),
+          );
+        }
+      }
+      await refetchSchedule();
+    } catch (e) {
+      setCancelRowErr((prev) => ({ ...prev, [item.assignment_id]: String(e) }));
+    } finally {
+      setCancellingAssignmentId(null);
+    }
+  }
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-10 md:px-8">
       <PageHeader
@@ -1145,6 +1418,7 @@ function ShiftsPage() {
         description={t("my_shifts_description")}
       />
       {err && <p className="mb-6 text-sm text-error">{err}</p>}
+      {cancelNotice && <p className="mb-6 text-sm text-amber-800 dark:text-amber-200">{cancelNotice}</p>}
       <section className="grid gap-8 xl:grid-cols-[minmax(0,1.25fr)_minmax(22rem,0.85fr)]">
         <div className="rounded-3xl border border-outline-variant/10 bg-surface-container-lowest p-5 shadow-sm md:p-6">
           <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
@@ -1260,16 +1534,29 @@ function ShiftsPage() {
                       </span>
                     </div>
                   </div>
-                  {item.bucket === "confirmed" && (
-                    <div className="mt-4">
-                      <Link
-                        to={`/worker/clock?assignment=${item.assignment_id}`}
-                        className="inline-flex justify-center rounded-xl bg-primary px-4 py-2 text-center text-sm font-semibold text-on-primary hover:bg-primary-dim"
+                  {(item.bucket === "confirmed" || item.bucket === "pending") && (
+                    <div className="mt-4 flex flex-wrap items-center gap-2">
+                      {item.bucket === "confirmed" && (
+                        <Link
+                          to={`/worker/clock?assignment=${item.assignment_id}`}
+                          className="inline-flex justify-center rounded-xl bg-primary px-4 py-2 text-center text-sm font-semibold text-on-primary hover:bg-primary-dim"
+                        >
+                          {t("my_shifts_clock_in")}
+                        </Link>
+                      )}
+                      <button
+                        type="button"
+                        disabled={cancellingAssignmentId !== null}
+                        onClick={() => void handleCancelShift(item)}
+                        className="inline-flex justify-center rounded-xl border border-outline-variant/30 bg-surface-container-low px-4 py-2 text-center text-sm font-semibold text-on-surface hover:bg-surface-container disabled:opacity-50"
                       >
-                        {t("my_shifts_clock_in")}
-                      </Link>
+                        {cancellingAssignmentId === item.assignment_id ? t("my_shifts_cancel_working") : t("my_shifts_cancel_shift")}
+                      </button>
                     </div>
                   )}
+                  {cancelRowErr[item.assignment_id] ? (
+                    <p className="mt-2 text-sm text-error">{cancelRowErr[item.assignment_id]}</p>
+                  ) : null}
                 </li>
               ))}
             </ul>
@@ -2400,6 +2687,7 @@ export default function WorkerApp() {
         <Route path="marketplace" element={<MarketplacePage />} />
         <Route path="marketplace/:shiftId" element={<MarketplaceShiftDetailPage />} />
         <Route path="history" element={<HistoryPage />} />
+        <Route path="history/assignment/:assignmentId" element={<HistoryAssignmentDetailPage />} />
         <Route path="shifts" element={<ShiftsPage />} />
         <Route path="notifications" element={<NotificationsPage />} />
         <Route path="profile" element={<WorkerProfilePage />} />

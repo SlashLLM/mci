@@ -41,6 +41,7 @@ async def dashboard_kpis(
     total_slots = sum(int(point["total_slots"]) for point in dashboard["fill_rate_breakdowns"]["by_period"])
     confirmed_assignments = sum(int(point["filled_slots"]) for point in dashboard["fill_rate_breakdowns"]["by_period"])
     no_show_assignments = sum(int(point["no_shows"]) for point in incident_points)
+    late_cancellations = sum(int(point["late_cancellations"]) for point in incident_points)
     return {
         "active_workers": int(summary["active_workers"]),
         "open_job_orders": int(summary["active_job_orders"]),
@@ -49,6 +50,7 @@ async def dashboard_kpis(
         "confirmed_assignments": int(confirmed_assignments),
         "total_shift_slots": int(total_slots),
         "no_show_assignments": int(no_show_assignments),
+        "late_cancellations": int(late_cancellations),
         "bucket_count": len(demand_supply_points),
     }
 
