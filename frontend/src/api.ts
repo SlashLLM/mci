@@ -76,6 +76,26 @@ export function setToken(t: string | null) {
   else localStorage.removeItem("mci_token");
 }
 
+export function getUserIdFromToken(): number | null {
+  const token = getToken();
+  if (!token) return null;
+  try {
+    const parts = token.split(".");
+    if (parts.length < 2) return null;
+    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+    const payload = JSON.parse(atob(padded)) as { sub?: unknown };
+    const sub = payload.sub;
+    if (typeof sub === "string") {
+      const n = parseInt(sub, 10);
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function getRole(): Role | null {
   const tokenRole = roleFromToken(getToken());
   if (tokenRole) {

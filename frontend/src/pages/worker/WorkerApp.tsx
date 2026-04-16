@@ -14,6 +14,7 @@ import { isAllowedJobType, JOB_TYPES } from "../../constants/jobTypes";
 import WorkerPortalLayout from "../../components/worker/WorkerPortalLayout";
 import WorkerOnboardingPage from "./WorkerOnboardingPage";
 import NotificationsPage from "../../components/portal/NotificationsPage";
+import JobOrderMessagingPage from "../messaging/JobOrderMessagingPage";
 
 function MatIcon({ name, className = "" }: { name: string; className?: string }) {
   return <span className={`material-symbols-outlined ${className}`.trim()}>{name}</span>;
@@ -2694,6 +2695,8 @@ export default function WorkerApp() {
         <Route path="settings" element={<Navigate to="/worker/profile?tab=account" replace />} />
         <Route path="earnings" element={<EarningsPage />} />
         <Route path="clock" element={<ClockPage />} />
+        <Route path="messaging" element={<JobOrderMessagingPage portalBase="/worker" />} />
+        <Route path="messaging/:jobId" element={<JobOrderMessagingPage portalBase="/worker" />} />
       </Route>
     </Routes>
   );

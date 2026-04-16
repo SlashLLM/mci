@@ -18,6 +18,7 @@ export function TaPortalLayout() {
       brandSubtitleKey="ta_portal_subtitle"
       sideNav={[
         { to: "/ta", labelKey: "job_orders", icon: "assignment", end: true },
+        { to: "/ta/messaging", labelKey: "messaging_nav", icon: "forum" },
         { to: "/ta/workers", labelKey: "ta_nav_workers", icon: "badge" },
         { to: "/ta/notifications", labelKey: "notifications_title", icon: "notifications" },
         { to: "/ta/profile", labelKey: "ta_nav_profile", icon: "person" },

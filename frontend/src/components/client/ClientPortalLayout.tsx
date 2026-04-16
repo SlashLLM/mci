@@ -36,6 +36,7 @@ export function ClientPortalLayout() {
       brandTitle={brandTitle}
       sideNav={[
         { to: "/client", labelKey: "job_orders", icon: "assignment", end: true },
+        { to: "/client/messaging", labelKey: "messaging_nav", icon: "forum" },
         { to: "/client/analytics", labelKey: "analytics", icon: "bar_chart" },
         { to: "/client/profile", labelKey: "profile", icon: "person_outline" },
         { to: "/client/job-history", labelKey: "client_job_history_heading", icon: "inventory_2" },

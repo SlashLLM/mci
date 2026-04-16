@@ -4,6 +4,7 @@ from typing import Optional
 
 from sqlalchemy import (
     JSON,
+    LargeBinary,
     Boolean,
     DateTime,
     Enum,
@@ -453,3 +454,43 @@ class JobTypeWeight(Base):
     weight_job_type: Mapped[float] = mapped_column(Float, default=0.2)
     weight_completion: Mapped[float] = mapped_column(Float, default=0.15)
     weight_tier: Mapped[float] = mapped_column(Float, default=0.1)
+
+
+class UserChatIdentity(Base):
+    """X25519 public key for job-order chat key wrapping (E2EE). Private key stays on client."""
+
+    __tablename__ = "user_chat_identities"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    x25519_public_key: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class JobOrderChatKeyWrapper(Base):
+    """Room symmetric key, sealed for one participant (opaque blob from client crypto)."""
+
+    __tablename__ = "job_order_chat_key_wrappers"
+    __table_args__ = (
+        UniqueConstraint("job_order_id", "user_id", name="uq_job_order_chat_wrap_user"),
+        Index("ix_job_order_chat_wrappers_job", "job_order_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_order_id: Mapped[int] = mapped_column(ForeignKey("job_orders.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    wrapped_key: Mapped[bytes] = mapped_column(LargeBinary(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class JobOrderChatMessage(Base):
+    """Opaque ciphertext only; server never decrypts."""
+
+    __tablename__ = "job_order_chat_messages"
+    __table_args__ = (Index("ix_job_order_chat_msg_job_created", "job_order_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_order_id: Mapped[int] = mapped_column(ForeignKey("job_orders.id"), index=True)
+    sender_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary(), nullable=False)
+    iv: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

@@ -21,6 +21,7 @@ from app.routers import (
     client_portal,
     exports,
     files,
+    job_order_chat,
     job_orders,
     notifications,
     payroll,
@@ -100,6 +101,7 @@ app.include_router(workers.router)
 app.include_router(client_orgs.router)
 app.include_router(ta_contracts.router)
 app.include_router(job_orders.router)
+app.include_router(job_order_chat.router)
 app.include_router(worker_app.router)
 app.include_router(attendance.router)
 app.include_router(timesheets.router)

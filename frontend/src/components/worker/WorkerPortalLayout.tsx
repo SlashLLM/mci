@@ -10,6 +10,7 @@ export default function WorkerPortalLayout({ children }: { children: ReactNode }
       brandSubtitleKey="Editorial Ledger v1.0"
       sideNav={[
         { to: "/worker/marketplace", labelKey: "marketplace", icon: "storefront" },
+        { to: "/worker/messaging", labelKey: "messaging_nav", icon: "forum" },
         { to: "/worker/shifts", labelKey: "my_shifts", icon: "event_available" },
         { to: "/worker/notifications", labelKey: "notifications_title", icon: "notifications" },
         { to: "/worker/history", labelKey: "worker_history_title", icon: "history" },

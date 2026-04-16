@@ -33,6 +33,7 @@ import {
 } from "./pages/ta/TaApp";
 import { TaAnalyticsPage } from "./pages/ta/TaAnalyticsPage";
 import NotificationsPage from "./components/portal/NotificationsPage";
+import JobOrderMessagingPage from "./pages/messaging/JobOrderMessagingPage";
 
 function GuardWorker({ children }: { children: React.ReactNode }) {
   if (!getToken()) return <Navigate to="/login" replace />;
@@ -158,6 +159,8 @@ export default function App() {
         <Route path="exports" element={<TaExportsPage />} />
         <Route path="timesheets" element={<TaTimesheetsPage />} />
         <Route path="clients" element={<TaClientsPage />} />
+        <Route path="messaging" element={<JobOrderMessagingPage portalBase="/ta" />} />
+        <Route path="messaging/:jobId" element={<JobOrderMessagingPage portalBase="/ta" />} />
         <Route path=":jobId" element={<JobOrderDetailView variant="ta" basePath="/ta" />} />
       </Route>
       <Route
@@ -179,6 +182,8 @@ export default function App() {
         <Route path="timesheets" element={<ClientTimesheetsPage />} />
         <Route path="ta-contract" element={<ClientTalentAgentPage />} />
         <Route path="live" element={<ClientLivePage />} />
+        <Route path="messaging" element={<JobOrderMessagingPage portalBase="/client" />} />
+        <Route path="messaging/:jobId" element={<JobOrderMessagingPage portalBase="/client" />} />
         <Route path=":jobId" element={<JobOrderDetailView variant="client" basePath="/client" />} />
       </Route>
       <Route path="/" element={<HomeOrDashboard />} />
