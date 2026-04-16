@@ -539,9 +539,12 @@ async def update_worker_status(
     if not wp:
         raise HTTPException(404)
     try:
-        wp.status = WorkerStatus(new_status)
+        next_status = WorkerStatus(new_status)
     except ValueError:
         raise HTTPException(400, detail="Invalid status")
+    if next_status == WorkerStatus.blacklisted and user.role != UserRole.admin:
+        raise HTTPException(403, detail="Only admin can blacklist workers")
+    wp.status = next_status
     await log_audit(
         db,
         actor_user_id=user.id,
@@ -588,9 +591,12 @@ async def update_worker_management(
     }
     if body.status is not None:
         try:
-            wp.status = WorkerStatus(body.status)
+            next_status = WorkerStatus(body.status)
         except ValueError:
             raise HTTPException(400, detail="Invalid status")
+        if next_status == WorkerStatus.blacklisted and user.role != UserRole.admin:
+            raise HTTPException(403, detail="Only admin can blacklist workers")
+        wp.status = next_status
     if body.internal_notes is not None:
         wp.internal_notes = body.internal_notes.strip() or None
     if body.follow_up_required is not None:

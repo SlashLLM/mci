@@ -31,7 +31,9 @@ from app.models.entities import (
     UserChatIdentity,
     UserRole,
     WorkerProfile,
+    WorkerReportStatus,
     WorkerStatus,
+    WorkerShiftReport,
     WorkerTier,
 )
 
@@ -39,6 +41,8 @@ __all__ = [
     "User",
     "UserRole",
     "WorkerProfile",
+    "WorkerShiftReport",
+    "WorkerReportStatus",
     "WorkerStatus",
     "WorkerTier",
     "ClientOrganization",

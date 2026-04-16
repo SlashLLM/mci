@@ -115,6 +115,8 @@ type WorkerSchedulePayload = {
   past_shifts: AssignmentRow[];
 };
 
+type WorkerReportCreateResponse = { ok: boolean; report_id: number; status: string };
+
 type TimesheetRow = {
   id: number;
   gross_pay: number;
@@ -1379,6 +1381,11 @@ function ShiftsPage() {
   const [cancelRowErr, setCancelRowErr] = useState<Record<number, string>>({});
   const [selectedDay, setSelectedDay] = useState(() => localDateYmd(new Date()));
   const [visibleMonth, setVisibleMonth] = useState(() => startOfMonth(new Date()));
+  const [reportTarget, setReportTarget] = useState<ScheduleCalendarItem | null>(null);
+  const [reportReason, setReportReason] = useState("");
+  const [reportBusy, setReportBusy] = useState(false);
+  const [reportErr, setReportErr] = useState<string | null>(null);
+  const [reportNotice, setReportNotice] = useState<string | null>(null);
 
   function ymd(iso: string): string {
     try {
@@ -1516,8 +1523,92 @@ function ShiftsPage() {
     }
   }
 
+  async function submitReport() {
+    if (!reportTarget || !reportReason.trim()) return;
+    setReportBusy(true);
+    setReportErr(null);
+    try {
+      await api<WorkerReportCreateResponse>("/worker-reports", {
+        method: "POST",
+        json: {
+          shift_assignment_id: reportTarget.assignment_id,
+          reason: reportReason.trim(),
+        },
+      });
+      setReportNotice("Report submitted successfully.");
+      setReportTarget(null);
+      setReportReason("");
+      setReportErr(null);
+    } catch (e) {
+      setReportErr(String(e));
+    } finally {
+      setReportBusy(false);
+    }
+  }
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-10 md:px-8">
+      {reportTarget && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+          role="presentation"
+          onClick={() => {
+            if (!reportBusy) {
+              setReportTarget(null);
+              setReportReason("");
+              setReportErr(null);
+            }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="worker-report-modal-title"
+            className="bg-surface-container-lowest border border-outline-variant/25 rounded-2xl shadow-xl max-w-md w-full p-6 text-on-surface"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="worker-report-modal-title" className="font-headline text-lg font-bold mb-2">
+              Report shift
+            </h2>
+            <p className="text-sm text-on-surface-variant mb-2">{reportTarget.shift.job_title}</p>
+            <p className="text-xs text-on-surface-variant mb-4">{fmtTimeRange(reportTarget.shift.starts_at, reportTarget.shift.ends_at)}</p>
+            <label className="block text-xs font-medium text-on-surface-variant mb-1" htmlFor="worker-report-reason">
+              Reason
+            </label>
+            <textarea
+              id="worker-report-reason"
+              className="min-h-28 w-full rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm"
+              value={reportReason}
+              onChange={(e) => setReportReason(e.target.value)}
+              placeholder="Enter report reason"
+            />
+            {!reportReason.trim() && <p className="mt-2 text-xs text-error">Reason is required.</p>}
+            {reportErr && <p className="mt-2 text-xs text-error">{reportErr}</p>}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                className="px-4 py-2 rounded-xl text-sm font-medium border border-outline-variant/30"
+                disabled={reportBusy}
+                onClick={() => {
+                  setReportTarget(null);
+                  setReportReason("");
+                  setReportErr(null);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="px-4 py-2 rounded-xl text-sm font-semibold bg-error text-on-error disabled:opacity-50"
+                disabled={reportBusy || !reportReason.trim()}
+                onClick={() => void submitReport()}
+              >
+                {reportBusy ? "Submitting..." : "Submit report"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <PageHeader
         eyebrow="Schedule"
         title={t("my_shifts")}
@@ -1525,6 +1616,7 @@ function ShiftsPage() {
       />
       {err && <p className="mb-6 text-sm text-error">{err}</p>}
       {cancelNotice && <p className="mb-6 text-sm text-amber-800 dark:text-amber-200">{cancelNotice}</p>}
+      {reportNotice && <p className="mb-6 text-sm text-emerald-700 dark:text-emerald-300">{reportNotice}</p>}
       <section className="grid gap-8 xl:grid-cols-[minmax(0,1.25fr)_minmax(22rem,0.85fr)]">
         <div className="rounded-3xl border border-outline-variant/10 bg-surface-container-lowest p-5 shadow-sm md:p-6">
           <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
@@ -1658,6 +1750,19 @@ function ShiftsPage() {
                       >
                         {cancellingAssignmentId === item.assignment_id ? t("my_shifts_cancel_working") : t("my_shifts_cancel_shift")}
                       </button>
+                      {item.bucket === "confirmed" && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setReportTarget(item);
+                            setReportReason("");
+                            setReportErr(null);
+                          }}
+                          className="inline-flex justify-center rounded-xl border border-error/30 bg-error-container/15 px-4 py-2 text-center text-sm font-semibold text-error hover:bg-error-container/30"
+                        >
+                          Report
+                        </button>
+                      )}
                     </div>
                   )}
                   {cancelRowErr[item.assignment_id] ? (

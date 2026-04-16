@@ -110,6 +110,12 @@ class PaymentStatus(str, enum.Enum):
     paid = "paid"
 
 
+class WorkerReportStatus(str, enum.Enum):
+    open = "open"
+    under_review = "under_review"
+    resolved = "resolved"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -442,6 +448,21 @@ class AuditLog(Base):
     old_values: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     new_values: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class WorkerShiftReport(Base):
+    __tablename__ = "worker_shift_reports"
+    __table_args__ = (
+        UniqueConstraint("shift_assignment_id", "worker_user_id", name="uq_worker_shift_report_assignment_worker"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    shift_assignment_id: Mapped[int] = mapped_column(ForeignKey("shift_assignments.id"), index=True)
+    worker_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    reason: Mapped[str] = mapped_column(Text)
+    status: Mapped[WorkerReportStatus] = mapped_column(Enum(WorkerReportStatus), default=WorkerReportStatus.open, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class JobTypeWeight(Base):

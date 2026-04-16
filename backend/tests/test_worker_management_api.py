@@ -58,13 +58,14 @@ def worker_management_setup():
             s.add(org)
             await s.flush()
             ta_user = User(phone="+18880001001", role=UserRole.ta, locale="en")
+            admin_user = User(phone="+18880001009", role=UserRole.admin, locale="en")
             worker_user = User(
                 phone="+18880001002",
                 email="worker-management@example.com",
                 role=UserRole.worker,
                 locale="en",
             )
-            s.add_all([ta_user, worker_user])
+            s.add_all([ta_user, admin_user, worker_user])
             await s.flush()
             wp = WorkerProfile(
                 user_id=worker_user.id,
@@ -110,12 +111,13 @@ def worker_management_setup():
             )
             s.add(offer)
             await s.commit()
-            return engine, Session, ta_user.id, worker_user.id, worker_user.email, wp.id, shift.id, offer.id
+            return engine, Session, ta_user.id, admin_user.id, worker_user.id, worker_user.email, wp.id, shift.id, offer.id
 
     (
         engine,
         Session,
         ta_user_id,
+        admin_user_id,
         worker_user_id,
         worker_email,
         worker_profile_id,
@@ -134,17 +136,18 @@ def worker_management_setup():
 
     _app.dependency_overrides[get_db] = override_get_db
     ta_token = create_access_token(str(ta_user_id), {})
+    admin_token = create_access_token(str(admin_user_id), {})
     worker_token = create_access_token(str(worker_user_id), {})
     try:
         with TestClient(_app) as client:
-            yield client, ta_token, worker_token, worker_email, worker_profile_id, shift_id, offer_id
+            yield client, ta_token, admin_token, worker_token, worker_email, worker_profile_id, shift_id, offer_id
     finally:
         _app.dependency_overrides.clear()
         asyncio.run(engine.dispose())
 
 
 def test_ta_can_update_worker_management(worker_management_setup):
-    client, ta_token, _worker_token, _worker_email, worker_profile_id, _shift_id, _offer_id = worker_management_setup
+    client, ta_token, _admin_token, _worker_token, _worker_email, worker_profile_id, _shift_id, _offer_id = worker_management_setup
     r = client.patch(
         f"/workers/{worker_profile_id}/management",
         headers={"Authorization": f"Bearer {ta_token}"},
@@ -162,7 +165,7 @@ def test_ta_can_update_worker_management(worker_management_setup):
 
 
 def test_directory_includes_follow_up_and_filter(worker_management_setup):
-    client, ta_token, _worker_token, _worker_email, worker_profile_id, _shift_id, _offer_id = worker_management_setup
+    client, ta_token, _admin_token, _worker_token, _worker_email, worker_profile_id, _shift_id, _offer_id = worker_management_setup
     up = client.patch(
         f"/workers/{worker_profile_id}/management",
         headers={"Authorization": f"Bearer {ta_token}"},
@@ -192,27 +195,27 @@ def test_directory_includes_follow_up_and_filter(worker_management_setup):
 
 
 def test_blacklisted_worker_sees_empty_marketplace_and_offers(worker_management_setup):
-    client, ta_token, worker_token, _worker_email, worker_profile_id, _shift_id, _offer_id = worker_management_setup
+    client, _ta_token, admin_token, worker_token, _worker_email, worker_profile_id, _shift_id, _offer_id = worker_management_setup
     bl = client.patch(
         f"/workers/{worker_profile_id}/management",
-        headers={"Authorization": f"Bearer {ta_token}"},
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={"status": "blacklisted"},
     )
     assert bl.status_code == 200, bl.text
     m = client.get("/worker/marketplace/shifts", headers={"Authorization": f"Bearer {worker_token}"})
-    assert m.status_code == 200, m.text
-    assert m.json() == []
+    assert m.status_code == 401, m.text
+    assert "blacklisted" in m.text.lower()
     o = client.get("/worker/offers", headers={"Authorization": f"Bearer {worker_token}"})
-    assert o.status_code == 200, o.text
-    assert o.json() == []
+    assert o.status_code == 401, o.text
+    assert "blacklisted" in o.text.lower()
 
 
 def test_blacklisted_worker_cannot_apply_or_accept_offer(worker_management_setup):
-    client, ta_token, worker_token, _worker_email, worker_profile_id, shift_id, offer_id = worker_management_setup
+    client, _ta_token, admin_token, worker_token, _worker_email, worker_profile_id, shift_id, offer_id = worker_management_setup
 
     blacklist = client.patch(
         f"/workers/{worker_profile_id}/management",
-        headers={"Authorization": f"Bearer {ta_token}"},
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={"status": "blacklisted"},
     )
     assert blacklist.status_code == 200, blacklist.text
@@ -221,19 +224,19 @@ def test_blacklisted_worker_cannot_apply_or_accept_offer(worker_management_setup
         f"/worker/marketplace/shifts/{shift_id}/apply",
         headers={"Authorization": f"Bearer {worker_token}"},
     )
-    assert apply_res.status_code == 403, apply_res.text
+    assert apply_res.status_code == 401, apply_res.text
     assert "blacklisted" in apply_res.text.lower()
 
     accept_res = client.post(
         f"/worker/offers/{offer_id}/accept",
         headers={"Authorization": f"Bearer {worker_token}"},
     )
-    assert accept_res.status_code == 403, accept_res.text
+    assert accept_res.status_code == 401, accept_res.text
     assert "blacklisted" in accept_res.text.lower()
 
 
 def test_inactive_worker_is_forced_out_from_authenticated_endpoints(worker_management_setup):
-    client, ta_token, worker_token, _worker_email, worker_profile_id, _shift_id, _offer_id = worker_management_setup
+    client, ta_token, _admin_token, worker_token, _worker_email, worker_profile_id, _shift_id, _offer_id = worker_management_setup
 
     inactive = client.patch(
         f"/workers/{worker_profile_id}/management",
@@ -248,7 +251,7 @@ def test_inactive_worker_is_forced_out_from_authenticated_endpoints(worker_manag
 
 
 def test_inactive_worker_cannot_login_via_worker_email_otp_verify(worker_management_setup):
-    client, ta_token, _worker_token, worker_email, worker_profile_id, _shift_id, _offer_id = worker_management_setup
+    client, ta_token, _admin_token, _worker_token, worker_email, worker_profile_id, _shift_id, _offer_id = worker_management_setup
 
     inactive = client.patch(
         f"/workers/{worker_profile_id}/management",
@@ -262,6 +265,22 @@ def test_inactive_worker_cannot_login_via_worker_email_otp_verify(worker_managem
     verify = client.post("/auth/worker/email-otp/verify", json={"email": worker_email, "code": code})
     assert verify.status_code == 403, verify.text
     assert "inactive" in verify.text.lower()
+
+
+def test_blacklisted_worker_cannot_login_via_worker_email_otp_verify(worker_management_setup):
+    client, _ta_token, admin_token, _worker_token, worker_email, worker_profile_id, _shift_id, _offer_id = worker_management_setup
+    blacklist = client.patch(
+        f"/workers/{worker_profile_id}/management",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"status": "blacklisted"},
+    )
+    assert blacklist.status_code == 200, blacklist.text
+
+    code = "654321"
+    asyncio.run(set_otp(f"email:{worker_email.lower()}", code))
+    verify = client.post("/auth/worker/email-otp/verify", json={"email": worker_email, "code": code})
+    assert verify.status_code == 403, verify.text
+    assert "blacklisted" in verify.text.lower()
 
 
 @pytest.fixture
@@ -387,3 +406,13 @@ def test_worker_history_assignment_detail(worker_expired_application_setup):
 
     other = client.get("/worker/history/assignments/99999", headers={"Authorization": f"Bearer {worker_token}"})
     assert other.status_code == 404
+
+
+def test_ta_cannot_blacklist_worker(worker_management_setup):
+    client, ta_token, _admin_token, _worker_token, _worker_email, worker_profile_id, _shift_id, _offer_id = worker_management_setup
+    res = client.patch(
+        f"/workers/{worker_profile_id}/management",
+        headers={"Authorization": f"Bearer {ta_token}"},
+        json={"status": "blacklisted"},
+    )
+    assert res.status_code == 403, res.text

@@ -29,6 +29,7 @@ from app.routers import (
     ta_portal,
     timesheets,
     worker_app,
+    worker_reports,
     workers,
 )
 from app.services.shift_reminders import reminder_loop
@@ -103,6 +104,7 @@ app.include_router(ta_contracts.router)
 app.include_router(job_orders.router)
 app.include_router(job_order_chat.router)
 app.include_router(worker_app.router)
+app.include_router(worker_reports.router)
 app.include_router(attendance.router)
 app.include_router(timesheets.router)
 app.include_router(payroll.router)

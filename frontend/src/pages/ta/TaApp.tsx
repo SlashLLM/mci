@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, NavLink, useNavigate } from "react-router-dom";
-import { api, apiUrl, getToken } from "../../api";
+import { api, apiUrl, getRole, getToken } from "../../api";
 import { fmtShiftDate, formatSgd, formatTimesheetRate } from "../../utils/timesheetFormat";
 import { JobOrderForm } from "../../components/jobOrder/JobOrderForm";
 import { jobStatusLabelKey } from "../../components/jobOrder/jobOrderStatus";
@@ -902,6 +902,7 @@ function followUpRequiredFromApi(v: unknown): boolean {
 
 export function TaWorkersPage() {
   const { t } = useTranslation();
+  const isAdmin = getRole() === "admin";
   const [rows, setRows] = useState<TaWorkerRow[]>([]);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -1024,7 +1025,7 @@ export function TaWorkersPage() {
         >
           <option value="">{t("ta_workers_all_statuses")}</option>
           <option value="active">{t("worker_status_active")}</option>
-          <option value="inactive">{t("worker_status_inactive")}</option>
+          {isAdmin ? null : <option value="inactive">{t("worker_status_inactive")}</option>}
           <option value="blacklisted">{t("worker_status_blacklisted")}</option>
         </select>
         <select
@@ -1133,6 +1134,18 @@ export function TaWorkersPage() {
             >
               {busy ? t("job_match_weights_saving") : t("ta_worker_save")}
             </button>
+            {isAdmin && status !== "blacklisted" && (
+              <button
+                type="button"
+                className="rounded-xl border border-error/30 bg-error-container/20 px-4 py-2 text-sm font-semibold text-error"
+                disabled={busy}
+                onClick={() => {
+                  setStatus("blacklisted");
+                }}
+              >
+                Blacklist
+              </button>
+            )}
             <button
               type="button"
               className="rounded-xl border border-outline-variant/30 px-4 py-2 text-sm font-medium"

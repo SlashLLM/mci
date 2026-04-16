@@ -30,6 +30,7 @@ from app.models import (
     UserRole,
     WorkerProfile,
     WorkerTier,
+    WorkerStatus,
 )
 from app.routers import admin as admin_router
 
@@ -52,9 +53,17 @@ def admin_setup():
             s.add(org)
             await s.flush()
             admin = User(phone="+16660001001", role=UserRole.admin, locale="en", is_active=True)
-            ta = User(phone="+16660001002", role=UserRole.ta, locale="en", is_active=True)
-            worker = User(phone="+16660001003", role=UserRole.worker, locale="en", is_active=True)
-            s.add_all([admin, ta, worker])
+            ta = User(phone="+16660001002", role=UserRole.ta, locale="en", is_active=True, email="ta1@example.com")
+            ta2 = User(phone="+16660001004", role=UserRole.ta, locale="en", is_active=False, email="ta2@example.com")
+            client_user = User(
+                phone="+16660001005",
+                role=UserRole.client,
+                locale="en",
+                is_active=True,
+                email="client@example.com",
+            )
+            worker = User(phone="+16660001003", role=UserRole.worker, locale="en", is_active=True, email="worker@example.com")
+            s.add_all([admin, ta, ta2, client_user, worker])
             await s.flush()
             wp = WorkerProfile(
                 user_id=worker.id,
@@ -65,6 +74,7 @@ def admin_setup():
                 certifications=[],
                 availability={},
                 tier=WorkerTier.standard,
+                status=WorkerStatus.active,
             )
             s.add(wp)
             await s.flush()
@@ -185,3 +195,84 @@ def test_audit_logs_admin_and_ta_not_worker(admin_setup):
 
     rt = client.get("/admin/audit-logs", headers={"Authorization": f"Bearer {tokens['ta']}"})
     assert rt.status_code == 200
+
+
+def test_admin_persona_lists_show_all_statuses(admin_setup):
+    client, _Session, tokens, worker_id, _shift_id = admin_setup
+    rw = client.get("/admin/personas/worker", headers={"Authorization": f"Bearer {tokens['admin']}"})
+    assert rw.status_code == 200, rw.text
+    worker_row = next(x for x in rw.json() if x["user_id"] == worker_id)
+    assert worker_row["status"] == "active"
+
+    rc = client.get("/admin/personas/client", headers={"Authorization": f"Bearer {tokens['admin']}"})
+    assert rc.status_code == 200, rc.text
+    assert any(x["role"] == "client" for x in rc.json())
+
+    rt = client.get("/admin/personas/ta", headers={"Authorization": f"Bearer {tokens['admin']}"})
+    assert rt.status_code == 200, rt.text
+    rows = rt.json()
+    assert any(x["is_active"] is True for x in rows)
+    assert any(x["is_active"] is False for x in rows)
+
+
+def test_admin_blacklist_worker_disables_and_marks_status(admin_setup):
+    client, Session, tokens, worker_id, _shift_id = admin_setup
+    reason = "Repeated safety violations"
+    res = client.post(
+        f"/admin/personas/{worker_id}/blacklist",
+        headers={"Authorization": f"Bearer {tokens['admin']}"},
+        json={"reason": reason},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["ok"] is True
+    list_res = client.get("/admin/personas/worker", headers={"Authorization": f"Bearer {tokens['admin']}"})
+    assert list_res.status_code == 200, list_res.text
+    worker_row = next(x for x in list_res.json() if x["user_id"] == worker_id)
+    assert worker_row["blacklist_reason"] == reason
+
+    async def check_user_and_worker():
+        async with Session() as s:
+            user = await s.get(User, worker_id)
+            assert user is not None
+            assert user.is_active is False
+            wr = await s.execute(select(WorkerProfile).where(WorkerProfile.user_id == worker_id))
+            wp = wr.scalar_one()
+            assert wp.status == WorkerStatus.blacklisted
+
+    asyncio.run(check_user_and_worker())
+
+
+def test_admin_blacklist_requires_reason(admin_setup):
+    client, _Session, tokens, worker_id, _shift_id = admin_setup
+    res = client.post(f"/admin/personas/{worker_id}/blacklist", headers={"Authorization": f"Bearer {tokens['admin']}"})
+    assert res.status_code == 422, res.text
+
+
+def test_admin_can_unblacklist_ta_and_client(admin_setup):
+    client, Session, tokens, _worker_id, _shift_id = admin_setup
+
+    async def get_ta_and_client():
+        async with Session() as s:
+            ta = (await s.execute(select(User).where(User.email == "ta1@example.com"))).scalar_one()
+            client_user = (await s.execute(select(User).where(User.email == "client@example.com"))).scalar_one()
+            return ta.id, client_user.id
+
+    ta_id, client_id = asyncio.run(get_ta_and_client())
+    for target_id in (ta_id, client_id):
+        bl = client.post(
+            f"/admin/personas/{target_id}/blacklist",
+            headers={"Authorization": f"Bearer {tokens['admin']}"},
+            json={"reason": "Policy breach"},
+        )
+        assert bl.status_code == 200, bl.text
+        un = client.post(f"/admin/personas/{target_id}/unblacklist", headers={"Authorization": f"Bearer {tokens['admin']}"})
+        assert un.status_code == 200, un.text
+
+    async def verify_active():
+        async with Session() as s:
+            ta = await s.get(User, ta_id)
+            client_user = await s.get(User, client_id)
+            assert ta is not None and ta.is_active is True
+            assert client_user is not None and client_user.is_active is True
+
+    asyncio.run(verify_active())

@@ -31,6 +31,8 @@ import {
   TaProfilePage,
   TaWorkersPage,
 } from "./pages/ta/TaApp";
+import { AdminPersonasPage } from "./pages/ta/AdminPersonasPage";
+import { AdminReportsPage } from "./pages/ta/AdminReportsPage";
 import { TaAnalyticsPage } from "./pages/ta/TaAnalyticsPage";
 import NotificationsPage from "./components/portal/NotificationsPage";
 import JobOrderMessagingPage from "./pages/messaging/JobOrderMessagingPage";
@@ -150,7 +152,7 @@ export default function App() {
           </GuardTa>
         }
       >
-        <Route index element={<TaJobsList />} />
+        <Route index element={getRole() === "admin" ? <Navigate to="/ta/workers" replace /> : <TaJobsList />} />
         <Route path="profile" element={<TaProfilePage />} />
         <Route path="workers" element={<TaWorkersPage />} />
         <Route path="notifications" element={<NotificationsPage />} />
@@ -158,7 +160,9 @@ export default function App() {
         <Route path="analytics" element={<TaAnalyticsPage />} />
         <Route path="exports" element={<TaExportsPage />} />
         <Route path="timesheets" element={<TaTimesheetsPage />} />
-        <Route path="clients" element={<TaClientsPage />} />
+        <Route path="clients" element={getRole() === "admin" ? <AdminPersonasPage role="client" /> : <TaClientsPage />} />
+        <Route path="talent-agents" element={<AdminPersonasPage role="ta" />} />
+        <Route path="reports" element={<AdminReportsPage />} />
         <Route path="messaging" element={<JobOrderMessagingPage portalBase="/ta" />} />
         <Route path="messaging/:jobId" element={<JobOrderMessagingPage portalBase="/ta" />} />
         <Route path=":jobId" element={<JobOrderDetailView variant="ta" basePath="/ta" />} />

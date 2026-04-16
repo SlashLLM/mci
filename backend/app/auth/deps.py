@@ -40,8 +40,9 @@ async def get_current_user(
     if user.role == UserRole.worker:
         result = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
         worker = result.scalar_one_or_none()
-        if worker and worker.status == WorkerStatus.inactive:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account is inactive")
+        if worker and worker.status in (WorkerStatus.inactive, WorkerStatus.blacklisted):
+            detail = "Account is inactive" if worker.status == WorkerStatus.inactive else "Account is blacklisted"
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
     return user
 
 

@@ -43,6 +43,11 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
     user = result.scalar_one_or_none()
     if not user or not user.is_active or not user.hashed_password:
         raise _LOGIN_FAILED
+    if user.role == UserRole.worker:
+        wp_result = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
+        wp = wp_result.scalar_one_or_none()
+        if wp and wp.status in (WorkerStatus.inactive, WorkerStatus.blacklisted):
+            raise _LOGIN_FAILED
     if not verify_password(body.password, user.hashed_password):
         raise _LOGIN_FAILED
     token = create_access_token(
@@ -197,8 +202,9 @@ async def worker_email_otp_verify(body: WorkerEmailOtpVerify, db: AsyncSession =
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
         wp_result = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
         wp = wp_result.scalar_one_or_none()
-        if wp and wp.status == WorkerStatus.inactive:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is inactive")
+        if wp and wp.status in (WorkerStatus.inactive, WorkerStatus.blacklisted):
+            detail = "Account is inactive" if wp.status == WorkerStatus.inactive else "Account is blacklisted"
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
     else:
         if body.login_only:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User does not exist")
