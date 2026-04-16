@@ -152,6 +152,16 @@ function rateLabel(s: MarketplaceShift): string {
   return "—";
 }
 
+function marketplaceShiftPayRate(s: MarketplaceShift): number | null {
+  if (s.hourly_rate != null && s.hourly_rate > 0) return s.hourly_rate;
+  if (s.per_shift_rate != null && s.per_shift_rate > 0) return s.per_shift_rate;
+  return null;
+}
+
+function marketplaceShiftDateYmd(s: MarketplaceShift): string {
+  return s.starts_at.slice(0, 10);
+}
+
 function fmtDistanceKm(distanceM: number | null | undefined, t: TFunction): string | null {
   if (distanceM == null || !Number.isFinite(distanceM)) return null;
   const km = distanceM / 1000;
@@ -411,15 +421,27 @@ function MarketplaceSection({
   const { t } = useTranslation();
   const [q, setQ] = useState("");
   const [jobTypeFilter, setJobTypeFilter] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [payRateMin, setPayRateMin] = useState("");
+  const [payRateMax, setPayRateMax] = useState("");
   const detailPath = (s: MarketplaceShift) => `/worker/marketplace/${s.shift_id}`;
   const filtered = useMemo(() => {
     const qq = q.trim().toLowerCase();
+    const minRate = payRateMin.trim() === "" ? NaN : parseFloat(payRateMin);
+    const maxRate = payRateMax.trim() === "" ? NaN : parseFloat(payRateMax);
     return shifts.filter((s) => {
       if (jobTypeFilter && s.job_type !== jobTypeFilter) return false;
+      const shiftDate = marketplaceShiftDateYmd(s);
+      if (dateFrom && shiftDate < dateFrom) return false;
+      if (dateTo && shiftDate > dateTo) return false;
+      const rate = marketplaceShiftPayRate(s);
+      if (Number.isFinite(minRate) && (rate == null || rate < minRate)) return false;
+      if (Number.isFinite(maxRate) && (rate == null || rate > maxRate)) return false;
       if (!qq) return true;
       return s.title.toLowerCase().includes(qq) || s.job_type.toLowerCase().includes(qq);
     });
-  }, [shifts, q, jobTypeFilter]);
+  }, [shifts, q, jobTypeFilter, dateFrom, dateTo, payRateMin, payRateMax]);
 
   const filterSelectClass =
     "min-w-[12rem] rounded-xl border-none bg-surface-container py-3 px-3 text-sm text-on-surface focus:ring-2 focus:ring-primary";
@@ -459,6 +481,48 @@ function MarketplaceSection({
                 ))}
               </select>
             </label>
+            <label className="flex flex-col gap-1 text-xs text-on-surface-variant">
+              <span>{t("marketplace_date_from_label")}</span>
+              <input
+                type="date"
+                className={filterSelectClass}
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-on-surface-variant">
+              <span>{t("marketplace_date_to_label")}</span>
+              <input
+                type="date"
+                className={filterSelectClass}
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-on-surface-variant">
+              <span>{t("marketplace_pay_rate_range_label")}</span>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  className="w-24 rounded-xl border-none bg-surface-container py-3 px-3 text-sm text-on-surface focus:ring-2 focus:ring-primary"
+                  placeholder={t("marketplace_pay_rate_min_placeholder")}
+                  value={payRateMin}
+                  onChange={(e) => setPayRateMin(e.target.value)}
+                />
+                <span className="text-on-surface-variant">-</span>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  className="w-24 rounded-xl border-none bg-surface-container py-3 px-3 text-sm text-on-surface focus:ring-2 focus:ring-primary"
+                  placeholder={t("marketplace_pay_rate_max_placeholder")}
+                  value={payRateMax}
+                  onChange={(e) => setPayRateMax(e.target.value)}
+                />
+              </div>
+            </label>
             <div className="relative">
               <MatIcon
                 name="search"
@@ -477,7 +541,6 @@ function MarketplaceSection({
       )}
       {!showTitle && (
         <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <h2 className="font-headline text-2xl font-extrabold tracking-tight">{t("marketplace")}</h2>
           <div className="flex flex-wrap items-end gap-3">
             {onMaxKmChange != null && maxKm != null && (
               <label className="flex flex-col gap-1 text-xs text-on-surface-variant">
@@ -507,6 +570,48 @@ function MarketplaceSection({
                   </option>
                 ))}
               </select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-on-surface-variant">
+              <span>{t("marketplace_date_from_label")}</span>
+              <input
+                type="date"
+                className={filterSelectClass}
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-on-surface-variant">
+              <span>{t("marketplace_date_to_label")}</span>
+              <input
+                type="date"
+                className={filterSelectClass}
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-on-surface-variant">
+              <span>{t("marketplace_pay_rate_range_label")}</span>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  className="w-24 rounded-xl border-none bg-surface-container py-3 px-3 text-sm text-on-surface focus:ring-2 focus:ring-primary"
+                  placeholder={t("marketplace_pay_rate_min_placeholder")}
+                  value={payRateMin}
+                  onChange={(e) => setPayRateMin(e.target.value)}
+                />
+                <span className="text-on-surface-variant">-</span>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  className="w-24 rounded-xl border-none bg-surface-container py-3 px-3 text-sm text-on-surface focus:ring-2 focus:ring-primary"
+                  placeholder={t("marketplace_pay_rate_max_placeholder")}
+                  value={payRateMax}
+                  onChange={(e) => setPayRateMax(e.target.value)}
+                />
+              </div>
             </label>
             <div className="relative max-w-md flex-1">
             <MatIcon
