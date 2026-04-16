@@ -193,7 +193,7 @@ export default function PortalAnalyticsDashboard({
   title,
   subtitle,
 }: {
-  role: "client" | "ta";
+  role: "client" | "ta" | "admin";
   title: string;
   subtitle: string;
 }) {
@@ -214,7 +214,7 @@ export default function PortalAnalyticsDashboard({
         const params = new URLSearchParams();
         params.set("period_days", String(periodDays));
         params.set("bucket", bucket);
-        if (role === "ta" && selectedClientOrgId != null) {
+        if (role !== "client" && selectedClientOrgId != null) {
           params.set("client_org_id", String(selectedClientOrgId));
         }
         const res = await api<DashboardResponse>(`/analytics/portal-dashboard?${params.toString()}`);
@@ -237,7 +237,7 @@ export default function PortalAnalyticsDashboard({
   const selectedClientName = useMemo(() => {
     if (!data) return null;
     if (role === "client") return clientOptions[0]?.name ?? null;
-    if (selectedClientOrgId == null) return t("analytics_scope_all_contracted");
+    if (selectedClientOrgId == null) return t(role === "admin" ? "analytics_scope_all_clients" : "analytics_scope_all_contracted");
     return clientOptions.find((client) => client.id === selectedClientOrgId)?.name ?? null;
   }, [clientOptions, data, role, selectedClientOrgId, t]);
 
@@ -282,7 +282,7 @@ export default function PortalAnalyticsDashboard({
               <option value="month">{t("analytics_bucket_month")}</option>
             </select>
           </label>
-          {role === "ta" && (
+          {role !== "client" && (
             <label className="text-sm">
               <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.16em] text-on-surface-variant">
                 {t("analytics_client_filter")}
@@ -292,7 +292,7 @@ export default function PortalAnalyticsDashboard({
                 value={selectedClientOrgId ?? ""}
                 onChange={(e) => setSelectedClientOrgId(e.target.value ? Number(e.target.value) : null)}
               >
-                <option value="">{t("analytics_scope_all_contracted")}</option>
+                <option value="">{t(role === "admin" ? "analytics_scope_all_clients" : "analytics_scope_all_contracted")}</option>
                 {clientOptions.map((client) => (
                   <option key={client.id} value={client.id}>
                     {client.name}

@@ -24,6 +24,7 @@ export function TaPortalLayout() {
               { to: "/ta/workers", labelKey: "ta_nav_workers", icon: "badge", end: false },
               { to: "/ta/clients", labelKey: "ta_nav_clients", icon: "groups", end: false },
               { to: "/ta/talent-agents", labelKey: "TA", icon: "supervisor_account", end: false },
+              { to: "/ta/analytics", labelKey: "analytics", icon: "bar_chart", end: false },
               { to: "/ta/reports", labelKey: "admin_reports_nav", icon: "report", end: false },
             ]
           : [
