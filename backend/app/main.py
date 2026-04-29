@@ -33,6 +33,8 @@ from app.routers import (
     workers,
 )
 from app.services.shift_reminders import reminder_loop
+from app.services.dispatch_tasks import dispatch_tasks_loop
+from app.services.recommendation_refresh import recommendation_refresh_loop
 
 
 def _configure_logging() -> None:
@@ -74,11 +76,23 @@ async def lifespan(app: FastAPI):
     )
     stop = asyncio.Event()
     reminder_task = asyncio.create_task(reminder_loop(stop))
+    recommendation_task = asyncio.create_task(recommendation_refresh_loop(stop))
+    dispatch_task = asyncio.create_task(dispatch_tasks_loop(stop))
     yield
     stop.set()
     reminder_task.cancel()
+    recommendation_task.cancel()
+    dispatch_task.cancel()
     try:
         await reminder_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await recommendation_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await dispatch_task
     except asyncio.CancelledError:
         pass
 

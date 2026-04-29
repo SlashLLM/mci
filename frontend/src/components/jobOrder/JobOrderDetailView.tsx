@@ -24,7 +24,28 @@ function ShiftAttendanceQrBlock({
   const [data, setData] = useState<{ clock_in_token: string; clock_out_token: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState<null | "in" | "out">(null);
+  const [copyErr, setCopyErr] = useState<null | "in" | "out">(null);
   const requestIdRef = useRef(0);
+  const copiedClearRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const copyToken = useCallback(async (token: string, which: "in" | "out") => {
+    setCopyErr(null);
+    try {
+      await navigator.clipboard.writeText(token);
+      setCopied(which);
+      if (copiedClearRef.current) clearTimeout(copiedClearRef.current);
+      copiedClearRef.current = setTimeout(() => setCopied(null), 2000);
+    } catch {
+      setCopyErr(which);
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (copiedClearRef.current) clearTimeout(copiedClearRef.current);
+    };
+  }, []);
 
   const loadTokens = useCallback(
     async (clearExisting: boolean) => {
@@ -56,6 +77,10 @@ function ShiftAttendanceQrBlock({
   }, [loadTokens]);
   const labelIn = portal ? "text-xs font-semibold text-on-surface mb-1" : "text-xs font-semibold text-slate-200 mb-1";
   const hint = portal ? "text-[11px] text-on-surface-variant mt-2" : "text-[11px] text-slate-500 mt-2";
+  const copyBtn =
+    portal
+      ? "mt-2 rounded-lg border border-outline-variant/30 px-2.5 py-1 text-[11px] font-semibold text-primary hover:bg-surface-container-high"
+      : "mt-2 rounded-lg border border-slate-600 px-2.5 py-1 text-[11px] font-semibold text-slate-200 hover:bg-slate-800";
   return (
     <div
       className={
@@ -85,6 +110,12 @@ function ShiftAttendanceQrBlock({
             <div className="rounded-xl bg-white p-2 shadow-sm">
               <QRCodeSVG value={data.clock_in_token} size={132} level="M" />
             </div>
+            <button type="button" className={copyBtn} onClick={() => void copyToken(data.clock_in_token, "in")}>
+              {copied === "in" ? t("job_detail_qr_copied") : t("job_detail_qr_copy_token")}
+            </button>
+            {copyErr === "in" && (
+              <p className="mt-1 text-center text-[11px] text-rose-600 dark:text-rose-400">{t("job_detail_qr_copy_failed")}</p>
+            )}
             <p className={hint}>{t("job_detail_qr_worker_hint")}</p>
           </div>
           <div className="flex flex-col items-center">
@@ -92,6 +123,12 @@ function ShiftAttendanceQrBlock({
             <div className="rounded-xl bg-white p-2 shadow-sm">
               <QRCodeSVG value={data.clock_out_token} size={132} level="M" />
             </div>
+            <button type="button" className={copyBtn} onClick={() => void copyToken(data.clock_out_token, "out")}>
+              {copied === "out" ? t("job_detail_qr_copied") : t("job_detail_qr_copy_token")}
+            </button>
+            {copyErr === "out" && (
+              <p className="mt-1 text-center text-[11px] text-rose-600 dark:text-rose-400">{t("job_detail_qr_copy_failed")}</p>
+            )}
             <p className={hint}>{t("job_detail_qr_worker_hint")}</p>
           </div>
         </>

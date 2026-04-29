@@ -226,7 +226,7 @@ async def main() -> None:
                 "location_lng": 103.8198,
                 "rating_avg": 4.4,
                 "tier": WorkerTier.standard,
-                "points": 145,
+                "points": 200,
                 "profile_completeness_pct": 88,
             },
         )

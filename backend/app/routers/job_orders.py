@@ -9,6 +9,7 @@ from sqlalchemy.orm import aliased, selectinload
 from app.auth.deps import require_roles
 from app.db.session import get_db
 from app.models import (
+    AutomaticDispatchMode,
     AssignmentStatus,
     AttendanceRecord,
     ClientOrganization,
@@ -138,6 +139,15 @@ def _match_weights_out(payload: dict) -> MatchWeightConfig:
     return MatchWeightConfig.model_validate(payload)
 
 
+def _dispatch_mode_out(mode: AutomaticDispatchMode | str) -> str:
+    return mode.value if isinstance(mode, AutomaticDispatchMode) else str(mode)
+
+
+def _automatic_dispatch_min_score_for_mode(_body: JobOrderCreate) -> float | None:
+    """Min score is not used for automatic dispatch (including performance_priority)."""
+    return None
+
+
 @router.post("", response_model=JobOrderOut)
 async def create_job_order(
     body: JobOrderCreate,
@@ -177,6 +187,11 @@ async def create_job_order(
         match_weight_overrides=_serialize_match_weights(body.match_weights),
         geofence_radius_m=body.geofence_radius_m,
         acceptance_window_minutes=body.acceptance_window_minutes,
+        automatic_dispatch_enabled=body.automatic_dispatch_enabled,
+        automatic_dispatch_mode=AutomaticDispatchMode(body.automatic_dispatch_mode),
+        automatic_dispatch_min_score=_automatic_dispatch_min_score_for_mode(body),
+        automatic_dispatch_top_percent=body.automatic_dispatch_top_percent,
+        automatic_dispatch_priority_window_minutes=body.automatic_dispatch_priority_window_minutes,
         status=JobOrderStatus.draft,
     )
     db.add(job)
@@ -236,6 +251,11 @@ async def create_job_order_for_client(
         match_weight_overrides=_serialize_match_weights(body.match_weights),
         geofence_radius_m=body.geofence_radius_m,
         acceptance_window_minutes=body.acceptance_window_minutes,
+        automatic_dispatch_enabled=body.automatic_dispatch_enabled,
+        automatic_dispatch_mode=AutomaticDispatchMode(body.automatic_dispatch_mode),
+        automatic_dispatch_min_score=_automatic_dispatch_min_score_for_mode(body),
+        automatic_dispatch_top_percent=body.automatic_dispatch_top_percent,
+        automatic_dispatch_priority_window_minutes=body.automatic_dispatch_priority_window_minutes,
         status=JobOrderStatus.draft,
     )
     db.add(job)
@@ -471,6 +491,11 @@ async def _to_out(db: AsyncSession, job: JobOrder) -> JobOrderOut:
         total_slots=total_slots,
         match_weights=_match_weights_out(effective_weights.to_dict()),
         match_weight_overrides=_match_weights_out(job.match_weight_overrides) if job.match_weight_overrides else None,
+        automatic_dispatch_enabled=bool(job.automatic_dispatch_enabled),
+        automatic_dispatch_mode=_dispatch_mode_out(job.automatic_dispatch_mode),
+        automatic_dispatch_min_score=job.automatic_dispatch_min_score,
+        automatic_dispatch_top_percent=job.automatic_dispatch_top_percent,
+        automatic_dispatch_priority_window_minutes=job.automatic_dispatch_priority_window_minutes,
     )
 
 
@@ -502,6 +527,11 @@ async def _to_detail_out(db: AsyncSession, job: JobOrder, viewer: User) -> JobOr
         total_slots=total_slots,
         match_weights=_match_weights_out(effective_weights.to_dict()),
         match_weight_overrides=_match_weights_out(job.match_weight_overrides) if job.match_weight_overrides else None,
+        automatic_dispatch_enabled=bool(job.automatic_dispatch_enabled),
+        automatic_dispatch_mode=_dispatch_mode_out(job.automatic_dispatch_mode),
+        automatic_dispatch_min_score=job.automatic_dispatch_min_score,
+        automatic_dispatch_top_percent=job.automatic_dispatch_top_percent,
+        automatic_dispatch_priority_window_minutes=job.automatic_dispatch_priority_window_minutes,
         hourly_rate=job.hourly_rate,
         per_shift_rate=job.per_shift_rate,
         required_skills=list(job.required_skills or []),

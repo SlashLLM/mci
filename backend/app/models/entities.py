@@ -56,6 +56,12 @@ class JobOrderStatus(str, enum.Enum):
     cancelled = "cancelled"
 
 
+class AutomaticDispatchMode(str, enum.Enum):
+    fcfs = "fcfs"
+    performance_priority = "performance_priority"
+    preferred_priority = "preferred_priority"
+
+
 class PayModel(str, enum.Enum):
     hourly = "hourly"
     per_shift = "per_shift"
@@ -114,6 +120,12 @@ class WorkerReportStatus(str, enum.Enum):
     open = "open"
     under_review = "under_review"
     resolved = "resolved"
+
+
+class DispatchTaskStatus(str, enum.Enum):
+    pending = "pending"
+    completed = "completed"
+    cancelled = "cancelled"
 
 
 class User(Base):
@@ -286,6 +298,14 @@ class JobOrder(Base):
     match_weight_overrides: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     geofence_radius_m: Mapped[int] = mapped_column(Integer, default=200)
     acceptance_window_minutes: Mapped[int] = mapped_column(Integer, default=120)
+    automatic_dispatch_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    automatic_dispatch_mode: Mapped[AutomaticDispatchMode] = mapped_column(
+        Enum(AutomaticDispatchMode),
+        default=AutomaticDispatchMode.fcfs,
+    )
+    automatic_dispatch_min_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    automatic_dispatch_top_percent: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    automatic_dispatch_priority_window_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     no_show_grace_minutes: Mapped[int] = mapped_column(Integer, default=15)
     overtime_multiplier: Mapped[float] = mapped_column(Float, default=1.5)
     status: Mapped[JobOrderStatus] = mapped_column(Enum(JobOrderStatus), default=JobOrderStatus.draft)
@@ -342,6 +362,28 @@ class ShiftOffer(Base):
     shift: Mapped["Shift"] = relationship(back_populates="offers")
 
 
+class ShiftDispatchTask(Base):
+    __tablename__ = "shift_dispatch_tasks"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_shift_dispatch_tasks_dedupe_key"),
+        Index("ix_shift_dispatch_tasks_run_after", "run_after"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    shift_id: Mapped[int] = mapped_column(ForeignKey("shifts.id"), index=True)
+    job_order_id: Mapped[int] = mapped_column(ForeignKey("job_orders.id"), index=True)
+    phase: Mapped[str] = mapped_column(String(32), default="performance_phase_2")
+    run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[DispatchTaskStatus] = mapped_column(
+        Enum(DispatchTaskStatus),
+        default=DispatchTaskStatus.pending,
+        index=True,
+    )
+    dedupe_key: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class MarketplaceShiftDismissal(Base):
     """Worker hid a marketplace shift listing (no offer required)."""
 
@@ -352,6 +394,29 @@ class MarketplaceShiftDismissal(Base):
     worker_profile_id: Mapped[int] = mapped_column(ForeignKey("worker_profiles.id"))
     shift_id: Mapped[int] = mapped_column(ForeignKey("shifts.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class WorkerShiftRecommendation(Base):
+    """Precomputed worker recommendations for hybrid refresh serving."""
+
+    __tablename__ = "worker_shift_recommendations"
+    __table_args__ = (
+        UniqueConstraint("worker_profile_id", "shift_id", name="uq_worker_shift_recommendation_worker_shift"),
+        Index("ix_worker_shift_recommendations_worker_profile_id", "worker_profile_id"),
+        Index("ix_worker_shift_recommendations_shift_id", "shift_id"),
+        Index("ix_worker_shift_recommendations_score_total", "score_total"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    worker_profile_id: Mapped[int] = mapped_column(ForeignKey("worker_profiles.id"))
+    shift_id: Mapped[int] = mapped_column(ForeignKey("shifts.id"))
+    score_total: Mapped[float] = mapped_column(Float, default=0.0)
+    urgency_score: Mapped[float] = mapped_column(Float, default=0.0)
+    return_opportunity: Mapped[bool] = mapped_column(Boolean, default=False)
+    score_breakdown: Mapped[dict] = mapped_column(JSON, default=dict)
+    reason_flags: Mapped[list] = mapped_column(JSON, default=list)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    source: Mapped[str] = mapped_column(String(32), default="daily")
 
 
 class AttendanceRecord(Base):

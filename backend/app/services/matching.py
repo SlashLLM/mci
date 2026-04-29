@@ -1,7 +1,7 @@
 """Rule-based matching: eligibility + weighted score (PRD §9)."""
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import select
@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
     AssignmentStatus,
+    AutomaticDispatchMode,
     JobOrder,
     JobTypeWeight,
     PreferredWorker,
@@ -212,14 +213,84 @@ async def rank_workers_for_shift(
     return scored
 
 
+def _dispatch_mode_value(job: JobOrder) -> str:
+    m = job.automatic_dispatch_mode
+    if isinstance(m, AutomaticDispatchMode):
+        return m.value
+    return str(m)
+
+
+def _published_at_utc(published_at: datetime) -> datetime:
+    if published_at.tzinfo is None:
+        return published_at.replace(tzinfo=timezone.utc)
+    return published_at.astimezone(timezone.utc)
+
+
+def is_elite_worker(worker: WorkerProfile) -> bool:
+    tier = worker.tier
+    if isinstance(tier, WorkerTier):
+        return tier == WorkerTier.elite
+    return str(tier).strip().lower() == WorkerTier.elite.value
+
+
+def performance_priority_marketplace_visible(
+    job: JobOrder,
+    worker: WorkerProfile,
+    now: datetime,
+) -> bool:
+    """If job is in elite-only performance window, only elite workers may see/apply in marketplace."""
+    if not job.automatic_dispatch_enabled or _dispatch_mode_value(job) != AutomaticDispatchMode.performance_priority.value:
+        return True
+    if not job.published_at or not job.automatic_dispatch_priority_window_minutes:
+        return True
+    pub = _published_at_utc(job.published_at)
+    now_utc = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    if now_utc.tzinfo != timezone.utc:
+        now_utc = now_utc.astimezone(timezone.utc)
+    window_m = int(job.automatic_dispatch_priority_window_minutes)
+    public_at = pub + timedelta(minutes=window_m)
+    if now_utc >= public_at:
+        return True
+    return is_elite_worker(worker)
+
+
 async def select_dispatch_candidates(
     db: AsyncSession,
     job: JobOrder,
     shift: Shift,
     ranked: list[tuple[WorkerProfile, float]],
+    *,
+    mode: str | None = None,
+    already_notified_worker_ids: set[int] | None = None,
+    performance_phase: int = 1,
 ) -> list[tuple[WorkerProfile, float]]:
-    """Return workers to notify using a single default strategy."""
+    """Return workers to notify using configured dispatch strategy."""
+    del shift
     if not ranked:
         return []
-    need = min(len(ranked), max(shift.workers_required * 5, shift.workers_required + 10))
-    return ranked[:need]
+    filtered = ranked
+    if already_notified_worker_ids:
+        filtered = [(worker, score) for worker, score in filtered if worker.id not in already_notified_worker_ids]
+    if not filtered:
+        return []
+
+    configured_mode = job.automatic_dispatch_mode
+    configured_mode_value = configured_mode.value if hasattr(configured_mode, "value") else str(configured_mode)
+    active_mode = mode or (configured_mode_value or "fcfs")
+    if active_mode == "performance_priority":
+        if performance_phase == 1:
+            return [(worker, score) for worker, score in filtered if is_elite_worker(worker)]
+        return list(filtered)
+
+    if active_mode == "preferred_priority":
+        pref_ids: set[int] = set()
+        if job.client_org_id:
+            r = await db.execute(
+                select(PreferredWorker.worker_id).where(PreferredWorker.client_org_id == job.client_org_id)
+            )
+            pref_ids = set(r.scalars().all())
+        preferred = [(worker, score) for worker, score in filtered if worker.id in pref_ids]
+        non_preferred = [(worker, score) for worker, score in filtered if worker.id not in pref_ids]
+        return preferred + non_preferred
+
+    return filtered

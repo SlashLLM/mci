@@ -17,6 +17,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    status_enum = sa.Enum("open", "under_review", "resolved", name="workerreportstatus")
+    status_enum.create(bind, checkfirst=True)
+
+    table_exists = "worker_shift_reports" in inspector.get_table_names()
+    if table_exists:
+        return
+
     op.create_table(
         "worker_shift_reports",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
@@ -25,7 +34,7 @@ def upgrade() -> None:
         sa.Column("reason", sa.Text(), nullable=False),
         sa.Column(
             "status",
-            sa.Enum("open", "under_review", "resolved", name="workerreportstatus"),
+            sa.Enum("open", "under_review", "resolved", name="workerreportstatus", create_type=False),
             nullable=False,
             server_default="open",
         ),
@@ -42,8 +51,16 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_worker_shift_reports_status", table_name="worker_shift_reports")
-    op.drop_index("ix_worker_shift_reports_worker_user_id", table_name="worker_shift_reports")
-    op.drop_index("ix_worker_shift_reports_shift_assignment_id", table_name="worker_shift_reports")
-    op.drop_table("worker_shift_reports")
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+
+    if "worker_shift_reports" in inspector.get_table_names():
+        indexes = {idx.get("name") for idx in inspector.get_indexes("worker_shift_reports")}
+        if "ix_worker_shift_reports_status" in indexes:
+            op.drop_index("ix_worker_shift_reports_status", table_name="worker_shift_reports")
+        if "ix_worker_shift_reports_worker_user_id" in indexes:
+            op.drop_index("ix_worker_shift_reports_worker_user_id", table_name="worker_shift_reports")
+        if "ix_worker_shift_reports_shift_assignment_id" in indexes:
+            op.drop_index("ix_worker_shift_reports_shift_assignment_id", table_name="worker_shift_reports")
+        op.drop_table("worker_shift_reports")
     sa.Enum(name="workerreportstatus").drop(op.get_bind(), checkfirst=True)

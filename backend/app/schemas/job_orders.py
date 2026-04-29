@@ -61,6 +61,11 @@ class JobOrderCreate(BaseModel):
     acceptance_window_minutes: int = 120
     shifts: list[ShiftBlock] = Field(default_factory=list)
     match_weights: Optional[MatchWeightConfig] = None
+    automatic_dispatch_enabled: bool = False
+    automatic_dispatch_mode: Literal["fcfs", "performance_priority", "preferred_priority"] = "fcfs"
+    automatic_dispatch_min_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    automatic_dispatch_top_percent: Optional[int] = Field(default=None, ge=1, le=100)
+    automatic_dispatch_priority_window_minutes: Optional[int] = Field(default=None, ge=1)
 
     @field_validator("job_type")
     @classmethod
@@ -82,6 +87,22 @@ class JobOrderCreate(BaseModel):
                 out.append(canonical)
         return out
 
+    @model_validator(mode="after")
+    def validate_dispatch_config(self) -> "JobOrderCreate":
+        if not self.automatic_dispatch_enabled:
+            self.automatic_dispatch_min_score = None
+            self.automatic_dispatch_top_percent = None
+            self.automatic_dispatch_priority_window_minutes = None
+            return self
+        if self.automatic_dispatch_mode == "performance_priority":
+            if self.automatic_dispatch_priority_window_minutes is None:
+                raise ValueError("automatic_dispatch_priority_window_minutes is required for performance_priority mode")
+            self.automatic_dispatch_top_percent = None
+            self.automatic_dispatch_min_score = None
+            return self
+        self.automatic_dispatch_min_score = None
+        return self
+
 
 class JobOrderOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -101,6 +122,11 @@ class JobOrderOut(BaseModel):
     total_slots: int = 0
     match_weights: MatchWeightConfig
     match_weight_overrides: Optional[MatchWeightConfig] = None
+    automatic_dispatch_enabled: bool = False
+    automatic_dispatch_mode: Literal["fcfs", "performance_priority", "preferred_priority"] = "fcfs"
+    automatic_dispatch_min_score: Optional[float] = None
+    automatic_dispatch_top_percent: Optional[int] = None
+    automatic_dispatch_priority_window_minutes: Optional[int] = None
 
 
 class JobAssignmentWorkerOut(BaseModel):

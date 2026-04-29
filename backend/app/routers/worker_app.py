@@ -35,9 +35,14 @@ from app.services.attendance_rules import (
     late_threshold_utc,
 )
 from app.services.dispatch import application_next_rank, confirmed_count, waitlist_next_rank
+from app.services.matching import performance_priority_marketplace_visible
 from app.services.job_status import refresh_job_order_fill_status
 from app.services.notifications import notify_user
-from app.services.recommendations import job_order_ids_rejected_for_worker, recommended_shifts_for_worker
+from app.services.recommendations import (
+    get_worker_recommendations,
+    job_order_ids_rejected_for_worker,
+    recommended_shifts_for_worker,
+)
 from app.services.ta_client_contracts import get_active_contract_for_org
 from app.services.worker_ratings import POINTS_PENALTY_LATE_CANCEL, adjust_worker_points
 
@@ -434,6 +439,71 @@ async def marketplace_shifts(
     return out
 
 
+@router.get("/recommendations")
+async def worker_recommendations(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles(UserRole.worker))],
+):
+    r = await db.execute(select(WorkerProfile).where(WorkerProfile.user_id == user.id))
+    wp = r.scalar_one_or_none()
+    if not wp or wp.status == WorkerStatus.blacklisted:
+        return {"recommendations": [], "freshness_ts": None}
+
+    rows, freshness_ts = await get_worker_recommendations(db, wp, limit=50, force_refresh_if_stale=True)
+    shift_ids = [item["shift"].id for item in rows]
+    pending_by_shift: dict[int, int] = {}
+    applied_shift_ids: set[int] = set()
+    if shift_ids:
+        off_r = await db.execute(
+            select(ShiftOffer).where(
+                ShiftOffer.worker_id == wp.id,
+                ShiftOffer.shift_id.in_(shift_ids),
+                ShiftOffer.status == ShiftOfferStatus.pending,
+            )
+        )
+        for o in off_r.scalars().all():
+            pending_by_shift.setdefault(o.shift_id, o.id)
+        app_r = await db.execute(
+            select(ShiftAssignment.shift_id).where(
+                ShiftAssignment.worker_id == wp.id,
+                ShiftAssignment.shift_id.in_(shift_ids),
+                ShiftAssignment.status == AssignmentStatus.applied,
+            )
+        )
+        applied_shift_ids = {row[0] for row in app_r.all()}
+
+    out: list[dict] = []
+    for item in rows:
+        shift = item["shift"]
+        job = item["job"]
+        rec = item["rec"]
+        out.append(
+            {
+                "shift_id": shift.id,
+                "job_id": job.id,
+                "title": job.title,
+                "job_type": job.job_type,
+                "starts_at": shift.starts_at.isoformat(),
+                "ends_at": shift.ends_at.isoformat(),
+                "location_address": job.location_address,
+                "location_lat": job.location_lat,
+                "location_lng": job.location_lng,
+                "hourly_rate": job.hourly_rate,
+                "per_shift_rate": job.per_shift_rate,
+                "pending_offer_id": pending_by_shift.get(shift.id),
+                "my_application_status": "applied" if shift.id in applied_shift_ids else None,
+                "score_total": rec.score_total,
+                "urgency_score": rec.urgency_score,
+                "return_opportunity": rec.return_opportunity,
+                "reason_flags": rec.reason_flags or [],
+                "score_breakdown": rec.score_breakdown or {},
+                "recommendation_source": rec.source,
+                "computed_at": rec.computed_at.isoformat(),
+            }
+        )
+    return {"recommendations": out, "freshness_ts": freshness_ts}
+
+
 @router.post("/marketplace/shifts/{shift_id}/dismiss")
 async def dismiss_marketplace_shift(
     shift_id: int,
@@ -487,6 +557,21 @@ async def apply_marketplace_shift(
     now = datetime.now(timezone.utc)
     if shift.starts_at <= now:
         raise HTTPException(400, detail="Shift has already started")
+    if not performance_priority_marketplace_visible(job, wp, now):
+        raise HTTPException(
+            403,
+            detail="This shift is reserved for Elite workers until the priority window ends.",
+        )
+
+    auto_dispatch_enabled = bool(job.automatic_dispatch_enabled)
+    waitlist_rank_for_apply = await application_next_rank(db, shift_id)
+    next_waitlist_rank = await waitlist_next_rank(db, shift_id)
+
+    async def _auto_dispatch_status_for_marketplace() -> tuple[AssignmentStatus, int | None]:
+        confirmed = await confirmed_count(db, shift_id)
+        if confirmed < shift.workers_required:
+            return AssignmentStatus.confirmed, None
+        return AssignmentStatus.waitlisted, next_waitlist_rank
 
     ex_a = await db.execute(
         select(ShiftAssignment).where(
@@ -496,6 +581,21 @@ async def apply_marketplace_shift(
     )
     existing = ex_a.scalar_one_or_none()
     if existing:
+        if existing.status == AssignmentStatus.applied and auto_dispatch_enabled:
+            next_status, next_rank = await _auto_dispatch_status_for_marketplace()
+            existing.status = next_status
+            existing.waitlist_rank = next_rank
+            existing.confirmed_at = datetime.now(timezone.utc) if next_status == AssignmentStatus.confirmed else None
+            await _decline_pending_offers_for_shift_worker(db, shift_id, wp.id)
+            await db.flush()
+            await refresh_job_order_fill_status(db, job)
+            await notify_user(
+                db,
+                user.id,
+                title="Shift update",
+                body=f"Status: {existing.status.value} for shift {shift_id}.",
+            )
+            return {"ok": True, "assignment_status": existing.status.value, "assignment_id": existing.id}
         if existing.status == AssignmentStatus.applied:
             return {"ok": True, "assignment_status": existing.status.value, "assignment_id": existing.id}
         if existing.status == AssignmentStatus.confirmed:
@@ -503,34 +603,84 @@ async def apply_marketplace_shift(
         if existing.status == AssignmentStatus.waitlisted:
             raise HTTPException(400, detail="You are already on the roster for this shift")
         if existing.status == AssignmentStatus.rejected:
-            existing.status = AssignmentStatus.applied
-            existing.waitlist_rank = await application_next_rank(db, shift_id)
+            if auto_dispatch_enabled:
+                next_status, next_rank = await _auto_dispatch_status_for_marketplace()
+                existing.status = next_status
+                existing.waitlist_rank = next_rank
+                existing.confirmed_at = datetime.now(timezone.utc) if next_status == AssignmentStatus.confirmed else None
+            else:
+                existing.status = AssignmentStatus.applied
+                existing.waitlist_rank = waitlist_rank_for_apply
+                existing.confirmed_at = None
             existing.match_score = 0.0
-            existing.confirmed_at = None
             await _decline_pending_offers_for_shift_worker(db, shift_id, wp.id)
             await db.flush()
+            if existing.status == AssignmentStatus.confirmed:
+                await _notify_ta_users_of_overlap(
+                    db,
+                    worker_profile_id=wp.id,
+                    new_assignment_id=existing.id,
+                    shift_id=shift.id,
+                    starts_at=shift.starts_at,
+                    ends_at=shift.ends_at,
+                )
             await refresh_job_order_fill_status(db, job)
+            if existing.status == AssignmentStatus.applied:
+                await notify_user(
+                    db,
+                    user.id,
+                    title="Application sent",
+                    body=f"Your application for “{job.title}” is pending employer approval.",
+                )
+            else:
+                await notify_user(
+                    db,
+                    user.id,
+                    title="Shift update",
+                    body=f"Status: {existing.status.value} for shift {shift_id}.",
+                )
             return {"ok": True, "assignment_status": existing.status.value, "assignment_id": existing.id}
         raise HTTPException(400, detail="Cannot apply for this shift")
 
-    rank = await application_next_rank(db, shift_id)
+    if auto_dispatch_enabled:
+        status, rank = await _auto_dispatch_status_for_marketplace()
+    else:
+        status, rank = AssignmentStatus.applied, waitlist_rank_for_apply
     sa = ShiftAssignment(
         shift_id=shift_id,
         worker_id=wp.id,
-        status=AssignmentStatus.applied,
+        status=status,
         waitlist_rank=rank,
         match_score=0.0,
+        confirmed_at=datetime.now(timezone.utc) if status == AssignmentStatus.confirmed else None,
     )
     db.add(sa)
     await _decline_pending_offers_for_shift_worker(db, shift_id, wp.id)
     await db.flush()
+    if sa.status == AssignmentStatus.confirmed:
+        await _notify_ta_users_of_overlap(
+            db,
+            worker_profile_id=wp.id,
+            new_assignment_id=sa.id,
+            shift_id=shift.id,
+            starts_at=shift.starts_at,
+            ends_at=shift.ends_at,
+        )
     await refresh_job_order_fill_status(db, job)
-    await notify_user(
-        db,
-        user.id,
-        title="Application sent",
-        body=f"Your application for “{job.title}” is pending employer approval.",
-    )
+    if sa.status == AssignmentStatus.applied:
+        await notify_user(
+            db,
+            user.id,
+            title="Application sent",
+            body=f"Your application for “{job.title}” is pending employer approval.",
+        )
+    else:
+        await notify_user(
+            db,
+            user.id,
+            title="Shift update",
+            body=f"Status: {sa.status.value} for shift {shift_id}.",
+        )
     return {"ok": True, "assignment_status": sa.status.value, "assignment_id": sa.id}
 
 

@@ -13,6 +13,8 @@ export type ShiftRow = {
   workers_required: number;
 };
 
+type AutomaticDispatchMode = "fcfs" | "performance_priority" | "preferred_priority";
+
 function toDatetimeLocalValue(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -86,6 +88,10 @@ export function JobOrderForm({ t, mode, organizations = [], onSuccess, lightMode
   const [defaultMatchWeights, setDefaultMatchWeights] = useState<MatchWeightConfig>(DEFAULT_MATCH_WEIGHTS);
   const [customizeMatchWeights, setCustomizeMatchWeights] = useState(false);
   const [matchWeights, setMatchWeights] = useState<MatchWeightConfig>(DEFAULT_MATCH_WEIGHTS);
+  const [automaticDispatchEnabled, setAutomaticDispatchEnabled] = useState(false);
+  const [automaticDispatchMode, setAutomaticDispatchMode] = useState<AutomaticDispatchMode>("fcfs");
+  /** Hours after posting before non-Elite workers see the job in marketplace (stored as minutes on server). */
+  const [automaticDispatchEliteExclusiveHours, setAutomaticDispatchEliteExclusiveHours] = useState("2");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const jobTypeFieldBase = useId().replace(/:/g, "_");
@@ -160,6 +166,8 @@ export function JobOrderForm({ t, mode, organizations = [], onSuccess, lightMode
       return;
     }
     const workersTotal = shifts.reduce((a, s) => a + (Number.isFinite(s.workers_required) ? s.workers_required : 0), 0);
+    const eliteHours = Math.max(0, Number.parseFloat(automaticDispatchEliteExclusiveHours) || 2);
+    const priorityWindowMinutes = Math.max(1, Math.round(eliteHours * 60));
     const jt = jobType.trim();
     if (!jt) {
       setError(t("job_form_required_core"));
@@ -186,6 +194,12 @@ export function JobOrderForm({ t, mode, organizations = [], onSuccess, lightMode
       geofence_radius_m: Math.max(0, parseInt(geofence, 10) || 200),
       acceptance_window_minutes: Math.max(1, parseInt(acceptanceMins, 10) || 120),
       match_weights: customizeMatchWeights ? matchWeights : null,
+      automatic_dispatch_enabled: automaticDispatchEnabled,
+      automatic_dispatch_mode: automaticDispatchMode,
+      automatic_dispatch_min_score: null,
+      automatic_dispatch_top_percent: null,
+      automatic_dispatch_priority_window_minutes:
+        automaticDispatchEnabled && automaticDispatchMode === "performance_priority" ? priorityWindowMinutes : null,
       shifts: shifts.map((s) => ({
         starts_at: new Date(s.starts_local).toISOString(),
         ends_at: new Date(s.ends_local).toISOString(),
@@ -363,6 +377,55 @@ export function JobOrderForm({ t, mode, organizations = [], onSuccess, lightMode
         <p className={hint}>
           {customizeMatchWeights ? t("job_match_weights_override_active") : t("job_match_weights_using_defaults")}
         </p>
+      </div>
+
+      <div className={sectionBox}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className={sectionTitle}>{t("job_auto_dispatch_title")}</h3>
+            <p className={hint}>{t("job_auto_dispatch_hint")}</p>
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={automaticDispatchEnabled}
+              onChange={(e) => setAutomaticDispatchEnabled(e.target.checked)}
+            />
+            {t("job_auto_dispatch_enable")}
+          </label>
+        </div>
+
+        {automaticDispatchEnabled && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <label className={labelClass}>{t("job_auto_dispatch_mode")}</label>
+              <select
+                className={inputClass}
+                value={automaticDispatchMode}
+                onChange={(e) => setAutomaticDispatchMode(e.target.value as AutomaticDispatchMode)}
+              >
+                <option value="fcfs">{t("job_auto_dispatch_mode_fcfs")}</option>
+                <option value="performance_priority">{t("job_auto_dispatch_mode_performance")}</option>
+                <option value="preferred_priority">{t("job_auto_dispatch_mode_preferred")}</option>
+              </select>
+            </div>
+
+            {automaticDispatchMode === "performance_priority" && (
+              <div className="sm:col-span-2">
+                <label className={labelClass}>{t("job_auto_dispatch_elite_exclusive_hours")}</label>
+                <input
+                  className={inputClass}
+                  type="number"
+                  min="0"
+                  step="0.25"
+                  value={automaticDispatchEliteExclusiveHours}
+                  onChange={(e) => setAutomaticDispatchEliteExclusiveHours(e.target.value)}
+                />
+                <p className={`${hint} mt-1`}>{t("job_auto_dispatch_elite_exclusive_hours_hint")}</p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className={sectionBox}>

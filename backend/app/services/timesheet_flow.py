@@ -14,6 +14,7 @@ from app.models import (
     TimesheetStatus,
 )
 from app.services.payroll_calc import compute_timesheet_pay
+from app.services.recommendation_refresh import enqueue_worker_recommendation_refresh
 from app.services.worker_ratings import POINTS_PER_COMPLETED_SHIFT, adjust_worker_points
 
 
@@ -87,6 +88,7 @@ async def mark_assignment_completed_if_clocked(
         _entry, created = await ensure_timesheet_for_assignment(db, assignment, attendance)
         if created:
             await adjust_worker_points(db, assignment.worker_id, POINTS_PER_COMPLETED_SHIFT)
+            enqueue_worker_recommendation_refresh(assignment.worker_id)
 
 
 def _hours_from_attendance(attendance: AttendanceRecord, shift: Shift) -> tuple[float, float, float]:

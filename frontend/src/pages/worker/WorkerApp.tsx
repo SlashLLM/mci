@@ -103,6 +103,21 @@ type MarketplaceShift = {
   my_application_status?: "applied" | null;
 };
 
+type RecommendationShift = MarketplaceShift & {
+  score_total: number;
+  urgency_score: number;
+  return_opportunity: boolean;
+  reason_flags: string[];
+  score_breakdown?: Record<string, number>;
+  recommendation_source: string;
+  computed_at: string;
+};
+
+type WorkerRecommendationsPayload = {
+  recommendations: RecommendationShift[];
+  freshness_ts?: string | null;
+};
+
 type AssignmentRow = {
   assignment_id: number;
   status: string;
@@ -746,6 +761,95 @@ function MarketplacePage() {
         locationHint={locationHint}
         accountBlacklisted={profile?.status === "blacklisted"}
       />
+    </div>
+  );
+}
+
+function RecommendationsPage() {
+  const { t } = useTranslation();
+  const [rows, setRows] = useState<RecommendationShift[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [freshnessTs, setFreshnessTs] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api<WorkerRecommendationsPayload>("/worker/recommendations")
+      .then((payload) => {
+        if (cancelled) return;
+        setRows(payload.recommendations || []);
+        setFreshnessTs(payload.freshness_ts || null);
+      })
+      .catch((e) => {
+        if (!cancelled) setErr(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <div className="mx-auto max-w-7xl px-4 py-10 md:px-8">
+      <PageHeader
+        eyebrow="Personalized feed"
+        title={t("recommendations_title")}
+        description={t("recommendations_description")}
+      />
+      {freshnessTs ? (
+        <p className="mb-4 text-xs text-on-surface-variant">
+          Refreshed {new Date(freshnessTs).toLocaleString()}
+        </p>
+      ) : null}
+      {err ? <p className="mb-6 text-sm text-error">{err}</p> : null}
+
+      {rows.length === 0 ? (
+        <p className="rounded-2xl border border-outline-variant/20 bg-surface-container-low px-6 py-8 text-on-surface-variant">
+          {t("marketplace_no_match")}
+        </p>
+      ) : (
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+          {rows.map((s) => (
+            <article
+              key={s.shift_id}
+              className="overflow-hidden rounded-2xl border border-outline-variant/10 bg-surface-container-lowest shadow-sm"
+            >
+              <div className="space-y-3 p-5">
+                <div className="flex flex-wrap gap-2">
+                  {s.urgency_score >= 0.6 ? (
+                    <span className="rounded-full bg-error/15 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-error">
+                      {t("recommendations_badge_urgency")}
+                    </span>
+                  ) : null}
+                  {s.return_opportunity ? (
+                    <span className="rounded-full bg-tertiary-container px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-on-tertiary-container">
+                      {t("recommendations_badge_return")}
+                    </span>
+                  ) : null}
+                </div>
+                <h2 className="font-headline text-xl font-bold">{s.title}</h2>
+                <p className="text-sm text-on-surface-variant">{s.job_type}</p>
+                <p className="text-lg font-bold text-primary">{rateLabel(s)}</p>
+                <p className="text-sm text-on-surface-variant">
+                  {fmtDate(s.starts_at)} · {fmtTime(s.starts_at)} - {fmtTime(s.ends_at)}
+                </p>
+                {s.return_opportunity ? (
+                  <p className="text-sm font-medium text-primary">{t("recommendations_reason_worked_before")}</p>
+                ) : null}
+                {fmtDistanceKm(s.distance_m, t) ? (
+                  <p className="text-xs text-on-surface-variant">{fmtDistanceKm(s.distance_m, t)}</p>
+                ) : null}
+              </div>
+              <div className="border-t border-outline-variant/10 bg-surface-container-low px-5 py-3">
+                <Link
+                  to={`/worker/marketplace/${s.shift_id}`}
+                  className="inline-flex items-center gap-2 text-sm font-bold text-primary hover:text-primary-dim"
+                >
+                  View details <MatIcon name="arrow_forward" className="text-base" />
+                </Link>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -2896,6 +3000,7 @@ export default function WorkerApp() {
       >
         <Route index element={<OffersHome />} />
         <Route path="marketplace" element={<MarketplacePage />} />
+        <Route path="recommendations" element={<RecommendationsPage />} />
         <Route path="marketplace/:shiftId" element={<MarketplaceShiftDetailPage />} />
         <Route path="history" element={<HistoryPage />} />
         <Route path="history/assignment/:assignmentId" element={<HistoryAssignmentDetailPage />} />
