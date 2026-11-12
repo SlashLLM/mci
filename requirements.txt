@@ -1,2 +1,17 @@
-# Python dependencies for the Vercel function (api/index.py). Kept in backend/requirements.txt.
--r backend/requirements.txt
+# Python dependencies for the Vercel function (api/index.py).
+# Vercel cannot follow "-r" includes, so this mirrors backend/requirements.txt; keep them in sync.
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+psycopg2-binary==2.9.10
+alembic==1.14.0
+pydantic==2.10.3
+email-validator==2.2.0
+pydantic-settings==2.6.1
+python-jose[cryptography]==3.3.0
+python-multipart==0.0.17
+cryptography==44.0.0
+openpyxl==3.1.5
+python-dateutil==2.9.0.post0
+httpx==0.28.1
