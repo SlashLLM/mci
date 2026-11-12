@@ -14,7 +14,7 @@
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ],
   "crons": [
-    { "path": "/api/internal/cron/tick", "schedule": "*/5 * * * *" },
+    { "path": "/api/internal/cron/tick", "schedule": "0 2 * * *" },
     { "path": "/api/internal/cron/daily", "schedule": "0 3 * * *" }
   ]
 }
