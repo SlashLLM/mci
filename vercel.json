@@ -3,6 +3,7 @@
   "installCommand": "npm ci",
   "buildCommand": "npm run build",
   "outputDirectory": "frontend/dist",
+  "regions": ["sin1"],
   "functions": {
     "api/index.py": {
       "maxDuration": 60,
